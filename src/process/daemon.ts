@@ -3,7 +3,19 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureDir, getStateDir } from "../config/paths.js";
-import { findBridgeObservation, findLiveBridge, probeBridge, readRuntimeState, type RuntimeState } from "../bridge/runtime.js";
+import {
+  clearStaleRuntimeState,
+  findBridgeObservation,
+  findLiveBridge,
+  probeBridge,
+  readRuntimeState,
+  type RuntimeState,
+} from "../bridge/runtime.js";
+import {
+  CLOUDFLARE_NETWORK_BLOCKED,
+  CloudflareNetworkBlockedError,
+  isCloudflareNetworkBlocked,
+} from "../tunnel/errors.js";
 import { Workspace } from "../workspace/manager.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -37,6 +49,11 @@ export async function ensureBridge(workspaceRoot: string, opts: { port?: number 
     throw new Error(
       `Bridge state is uncertain (${observation.reason}); refusing to start another bridge.`
     );
+  }
+  if (observation.state === "stale") {
+    if (!clearStaleRuntimeState(workspace.id, observation.runtime)) {
+      throw new Error("Stale Bridge runtime changed or could not be cleared; refusing to start another bridge.");
+    }
   }
 
   const logDir = ensureDir(path.join(getStateDir(), "logs"));
@@ -89,9 +106,13 @@ export async function adminFetch<T = unknown>(
       headers: { Authorization: `Bearer ${runtime.adminToken}` },
       signal: controller.signal,
     });
-    const body = (await response.json().catch(() => ({}))) as T & { message?: string };
+    const body = (await response.json().catch(() => ({}))) as T & { error?: string; message?: string };
     if (!response.ok) {
-      throw new Error((body as { message?: string }).message ?? `Admin request failed (${response.status})`);
+      const message = body.message ?? `Admin request failed (${response.status})`;
+      if (body.error === CLOUDFLARE_NETWORK_BLOCKED || isCloudflareNetworkBlocked(message)) {
+        throw new CloudflareNetworkBlockedError(message);
+      }
+      throw new Error(message);
     }
     return body;
   } finally {

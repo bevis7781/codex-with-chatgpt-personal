@@ -25,6 +25,11 @@ import {
   TUNNEL_CHOICE_PROMPT,
 } from "../tunnel/state.js";
 import { planPersonalNamedTunnel } from "../tunnel/personal-default.js";
+import {
+  CLOUDFLARE_NETWORK_BLOCKED,
+  CloudflareNetworkBlockedError,
+  isCloudflareNetworkBlocked,
+} from "../tunnel/errors.js";
 import { Logger } from "../logger/index.js";
 import { getStateDir } from "../config/paths.js";
 import { ensureSandboxAllowlist, getCodexConfigPath, isStateDirAllowlisted } from "../config/sandbox-allow.js";
@@ -249,6 +254,9 @@ async function preparePersonalNamedTunnel(workspaceRoot: string, tunnelEnabled: 
     fallbackToQuick: false,
   });
   if (!result.ok) {
+    if (result.errorCode === CLOUDFLARE_NETWORK_BLOCKED) {
+      throw new CloudflareNetworkBlockedError(result.error ?? "Cloudflare network access is blocked or unavailable.");
+    }
     throw new Error(result.error ?? "Named Tunnel setup failed; no temporary fallback was selected.");
   }
   return true;
@@ -499,7 +507,7 @@ program
   .option("--json", "machine-readable output", false)
   .action(async (opts: { workspace?: string; fix: boolean; json: boolean }) => {
     const root = resolveWorkspace(opts.workspace);
-    const report: Record<string, { ok: boolean; detail?: string }> = {};
+    const report: Record<string, { ok: boolean; detail?: string; code?: string }> = {};
     const results: string[] = [];
 
     // Node
@@ -557,6 +565,8 @@ program
       } else if (observation.state === "unknown") {
         bridgeUnknown = true;
         report.bridge = { ok: false, detail: `状态无法确认（${observation.reason}），未自动修复` };
+      } else if (observation.state === "stale" && !opts.fix) {
+        report.bridge = { ok: false, detail: "发现可恢复的 stale runtime；未执行自动修复" };
       } else if (opts.fix) {
         try {
           runtime = (await ensureBridge(root)).runtime;
@@ -598,6 +608,7 @@ program
       : "Codex with ChatGPT";
     const tunnelState = workspace ? readTunnelState(workspace.id) : null;
     const namedReady = tunnelState ? isNamedTunnelReady(tunnelState) : false;
+    let cloudflareNetworkBlocked = false;
     let namedRepair: { needed: boolean; userMessage?: string } = { needed: false };
     let chatgptRepair: {
       needed: boolean;
@@ -670,11 +681,23 @@ program
             }
           }
         } catch (error) {
-          report.tunnel = { ok: false, detail: (error as Error).message };
+          if (isCloudflareNetworkBlocked(error)) {
+            cloudflareNetworkBlocked = true;
+            report.tunnel = {
+              ok: false,
+              code: CLOUDFLARE_NETWORK_BLOCKED,
+              detail: CLOUDFLARE_NETWORK_BLOCKED,
+            };
+          } else {
+            report.tunnel = { ok: false, detail: (error as Error).message };
+          }
         }
       }
 
-      if (currentUrl && healthy) {
+      if (cloudflareNetworkBlocked) {
+        // A Cloudflare network block is not a connector or Project repair.
+        // Keep Named state and both repair actions untouched.
+      } else if (currentUrl && healthy) {
         report.tunnel = { ok: true, detail: currentUrl };
         const nextMcp = mcpUrlFromPublic(currentUrl);
         const action = connectorAction(lastEndpoint?.mcpUrl, nextMcp);
@@ -783,11 +806,13 @@ program
     say(
       allOk && !chatgptRepair.needed && !namedRepair.needed
         ? "Everything looks good."
-        : chatgptRepair.needed
-          ? "本地已就绪，还需要在 ChatGPT 删除并重新添加该连接。"
-          : namedRepair.needed
-            ? "固定域名还没连上，需要先登录 Cloudflare。"
-            : "仍有问题未解决，可尝试 `c2c restart --tunnel`。"
+        : cloudflareNetworkBlocked
+          ? "Cloudflare 网络访问被阻断；已保留固定域名状态，未切换临时地址或修复连接器。"
+          : chatgptRepair.needed
+            ? "本地已就绪，还需要在 ChatGPT 删除并重新添加该连接。"
+            : namedRepair.needed
+              ? "固定域名还没连上，需要先登录 Cloudflare。"
+              : "仍有问题未解决，可尝试 `c2c restart --tunnel`。"
     );
     if (!allOk || namedRepair.needed) process.exitCode = 1;
   });
@@ -1523,20 +1548,24 @@ tunnelCmd
         zone,
         hostname: opts.hostname,
       });
-      if (await findLiveBridge(workspace.id)) await stopBridge(root);
+      if (result.ok && (await findLiveBridge(workspace.id))) await stopBridge(root);
       const payload = {
         ...tunnelChoicePayload(workspace),
-        ok: true,
+        ok: result.ok,
         fallback: result.fallback,
         userMessage: result.userMessage,
         error: result.error,
+        errorCode: result.errorCode,
         state: result.state,
       };
       if (opts.json) {
         say(JSON.stringify(payload));
         return;
       }
-      if (result.fallback) say(result.userMessage ?? "");
+      if (!result.ok && result.errorCode === CLOUDFLARE_NETWORK_BLOCKED) {
+        say("CLOUDFLARE_NETWORK_BLOCKED：本机或当前网络无法访问 Cloudflare，已保留固定域名状态，未切换临时地址或修改连接器。");
+      } else if (!result.ok) say(result.error ?? "固定域名设置失败；未切换临时地址。");
+      else if (result.fallback) say(result.userMessage ?? "");
       else check(`固定域名已就绪：${result.state.hostname}`);
     } catch (error) {
       handleCliError(error, opts.json);
@@ -1563,7 +1592,15 @@ tunnelCmd
 function handleCliError(error: unknown, json: boolean): void {
   const message = error instanceof Error ? error.message : String(error);
   if (json) {
-    say(JSON.stringify({ ok: false, error: message }));
+    say(
+      JSON.stringify({
+        ok: false,
+        error: message,
+        ...(isCloudflareNetworkBlocked(error) ? { code: CLOUDFLARE_NETWORK_BLOCKED } : {}),
+      })
+    );
+  } else if (isCloudflareNetworkBlocked(error)) {
+    say("CLOUDFLARE_NETWORK_BLOCKED：本机或当前网络无法访问 Cloudflare API。已保留固定域名状态，未切换临时地址或修改连接器。");
   } else if (message.startsWith("NEED_CLOUDFLARED")) {
     say("需要你完成一步：");
     say("");

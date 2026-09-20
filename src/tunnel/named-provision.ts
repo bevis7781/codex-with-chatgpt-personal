@@ -6,6 +6,12 @@ import { findBinary } from "./detect.js";
 import { suggestedNamedHostname } from "./hostname.js";
 import { normalizeNamedTunnelHostname } from "./cloudflared-named.js";
 import {
+  CLOUDFLARE_NETWORK_BLOCKED,
+  classifyCloudflareError,
+  cloudflareFailureCode,
+  type CloudflareFailureCode,
+} from "./errors.js";
+import {
   NAMED_FALLBACK_MESSAGE,
   readTunnelState,
   writeTunnelState,
@@ -114,7 +120,7 @@ export class ProcessCloudflaredAccount implements CloudflaredAccount {
       }, LOGIN_TIMEOUT_MS);
       child.on("error", (error) => {
         clearTimeout(timer);
-        reject(error);
+        reject(classifyCloudflareError(error));
       });
       child.on("exit", (code) => {
         clearTimeout(timer);
@@ -123,10 +129,12 @@ export class ProcessCloudflaredAccount implements CloudflaredAccount {
           return;
         }
         reject(
-          new Error(
-            `Cloudflare login did not finish${code !== 0 ? ` (exit ${code})` : ""}${
-              output.trim() ? `: ${output.trim().slice(0, 400)}` : ""
-            }`
+          classifyCloudflareError(
+            new Error(
+              `Cloudflare login did not finish${code !== 0 ? ` (exit ${code})` : ""}${
+                output.trim() ? `: ${output.trim().slice(0, 400)}` : ""
+              }`
+            )
           )
         );
       });
@@ -140,7 +148,9 @@ export class ProcessCloudflaredAccount implements CloudflaredAccount {
       if (parsed.length > 0 || (json.stdout || json.stderr).trim().startsWith("[")) return parsed;
     }
     const table = this.run(["tunnel", "list"]);
-    if (!table.ok) throw new Error(table.stderr || table.stdout || "Unable to list Cloudflare tunnels");
+    if (!table.ok) {
+      throw classifyCloudflareError(new Error(table.stderr || table.stdout || "Unable to list Cloudflare tunnels"));
+    }
     return parseTunnelList(`${table.stdout}\n${table.stderr}`);
   }
 
@@ -154,13 +164,13 @@ export class ProcessCloudflaredAccount implements CloudflaredAccount {
       const again = (await this.listTunnels()).find((tunnel) => tunnel.name === name);
       if (again) return again;
     }
-    throw new Error(result.stderr || result.stdout || `Unable to create tunnel ${name}`);
+    throw classifyCloudflareError(new Error(result.stderr || result.stdout || `Unable to create tunnel ${name}`));
   }
 
   async routeDns(tunnelName: string, hostname: string): Promise<void> {
     const result = this.run(["tunnel", "route", "dns", tunnelName, hostname]);
     if (result.ok || isBenignRouteError(`${result.stdout}\n${result.stderr}`)) return;
-    throw new Error(result.stderr || result.stdout || `Unable to route ${hostname}`);
+    throw classifyCloudflareError(new Error(result.stderr || result.stdout || `Unable to route ${hostname}`));
   }
 
   private run(args: string[]): { ok: boolean; stdout: string; stderr: string } {
@@ -183,6 +193,7 @@ export interface ProvisionNamedResult {
   fallback: boolean;
   userMessage?: string;
   error?: string;
+  errorCode?: CloudflareFailureCode;
 }
 
 export async function provisionNamedTunnel(opts: {
@@ -242,12 +253,22 @@ function provisionFailure(
   error: string,
   fallbackToQuick = true
 ): ProvisionNamedResult {
+  const classified = classifyCloudflareError(new Error(error));
+  if (cloudflareFailureCode(classified) === CLOUDFLARE_NETWORK_BLOCKED) {
+    return {
+      ok: false,
+      state: readTunnelState(workspaceId),
+      fallback: false,
+      error: classified.message,
+      errorCode: CLOUDFLARE_NETWORK_BLOCKED,
+    };
+  }
   if (!fallbackToQuick) {
     return {
       ok: false,
       state: readTunnelState(workspaceId),
       fallback: false,
-      error,
+      error: classified.message,
     };
   }
   const state = chooseQuickTunnel(workspaceId, reason);
@@ -256,6 +277,6 @@ function provisionFailure(
     state,
     fallback: true,
     userMessage: NAMED_FALLBACK_MESSAGE,
-    error,
+    error: classified.message,
   };
 }

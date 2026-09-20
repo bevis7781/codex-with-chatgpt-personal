@@ -16,6 +16,7 @@ import { Logger, nullLogger } from "../logger/index.js";
 import { DEFAULT_HOST, DEFAULT_PORT } from "../config/paths.js";
 import { SERVICE_NAME, VERSION } from "../version.js";
 import { writeRuntimeState, clearRuntimeState, type RuntimeState } from "./runtime.js";
+import { CLOUDFLARE_NETWORK_BLOCKED, cloudflareFailureCode } from "../tunnel/errors.js";
 
 function tunnelForWorkspace(workspaceId: string, logger: Logger): TunnelProvider {
   const binding = namedTunnelBinding(readTunnelState(workspaceId));
@@ -184,7 +185,12 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
       })
       .catch((error: Error) => {
         logger.error(`Tunnel start failed: ${error.message}`);
-        res.status(500).json({ error: "tunnel_failed", message: error.message });
+        const code = cloudflareFailureCode(error);
+        res.status(500).json({
+          error: code ?? "tunnel_failed",
+          message: error.message,
+          ...(code === CLOUDFLARE_NETWORK_BLOCKED ? { code } : {}),
+        });
       });
   });
 

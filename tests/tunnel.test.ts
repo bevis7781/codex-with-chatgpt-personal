@@ -9,7 +9,12 @@ import {
   parseQuickTunnelUrl,
   type CloudflaredQuickTunnelOptions,
 } from "../src/tunnel/cloudflared.js";
-import { normalizeNamedTunnelHostname } from "../src/tunnel/cloudflared-named.js";
+import { CloudflaredNamedTunnel, normalizeNamedTunnelHostname } from "../src/tunnel/cloudflared-named.js";
+import {
+  CLOUDFLARE_NETWORK_BLOCKED,
+  classifyCloudflareError,
+  cloudflareFailureCode,
+} from "../src/tunnel/errors.js";
 import { hostnameSlug, parseZoneInput, suggestedNamedHostname } from "../src/tunnel/hostname.js";
 import {
   chooseQuickTunnel,
@@ -19,7 +24,7 @@ import {
   provisionNamedTunnel,
   type CloudflaredAccount,
 } from "../src/tunnel/named-provision.js";
-import { isNamedTunnelReady, needsTunnelChoice, readTunnelState } from "../src/tunnel/state.js";
+import { isNamedTunnelReady, needsTunnelChoice, readTunnelState, writeTunnelState } from "../src/tunnel/state.js";
 import { cleanup, isolateStateDir, makeTmpDir, write } from "./helpers.js";
 
 const stateDirs: string[] = [];
@@ -214,6 +219,43 @@ describe("normalizeNamedTunnelHostname", () => {
   });
 });
 
+describe("Cloudflare network-block classification", () => {
+  it("classifies the Windows connectex socket-permission failure", () => {
+    const error = classifyCloudflareError(
+      new Error(
+        "dial tcp 104.16.0.1:443: connectex: An attempt was made to access a socket in a way forbidden by its access permissions."
+      )
+    );
+    expect(cloudflareFailureCode(error)).toBe(CLOUDFLARE_NETWORK_BLOCKED);
+    expect(error.message).toContain(CLOUDFLARE_NETWORK_BLOCKED);
+  });
+
+  it("classifies Cloudflare API DNS lookup failure", () => {
+    expect(cloudflareFailureCode(new Error("lookup api.cloudflare.com: no such host"))).toBe(
+      CLOUDFLARE_NETWORK_BLOCKED
+    );
+  });
+
+  it("does not classify unrelated cloudflared failures as network-blocked", () => {
+    expect(cloudflareFailureCode(new Error("authentication failed: invalid tunnel credentials"))).toBeNull();
+  });
+
+  it("classifies network-blocked output from the Named provider", async () => {
+    const child = new FakeCloudflaredProcess();
+    const tunnel = new CloudflaredNamedTunnel({
+      tunnelName: "c2c-test",
+      hostname: "c2c-test.example.com",
+      binaryOverride: "cloudflared",
+      spawnImpl: vi.fn(() => child as unknown as ChildProcess),
+    });
+    const starting = tunnel.start(3333);
+    child.stderr.write("lookup api.cloudflare.com: no such host\n");
+    child.exitCode = 1;
+    child.emit("exit", 1, null);
+    await expect(starting).rejects.toMatchObject({ code: CLOUDFLARE_NETWORK_BLOCKED });
+  });
+});
+
 describe("named hostname helpers", () => {
   it("builds a stable c2c-<project>.<zone> hostname", () => {
     expect(suggestedNamedHostname("Example.COM", "My App", "abcdef123456")).toBe("c2c-my-app.example.com");
@@ -333,6 +375,37 @@ describe("tunnel preference state", () => {
       expect(result.fallback).toBe(false);
       expect(result.state.preference).toBe("unset");
       expect(readTunnelState("ws3").preference).toBe("unset");
+    });
+  });
+
+  it("keeps Named state and refuses Quick fallback on a Cloudflare network block", async () => {
+    stateDirs.push(isolateStateDir());
+    writeTunnelState({
+      workspaceId: "ws-network-blocked",
+      preference: "named",
+      provider: "cloudflare-named",
+      tunnelName: "c2c-ws-network-blocked",
+      hostname: "c2c-ws-network-blocked.example.com",
+    });
+    const account: CloudflaredAccount = {
+      hasCert: () => true,
+      login: async () => undefined,
+      listTunnels: async () => [],
+      createTunnel: async () => {
+        throw new Error("lookup api.cloudflare.com: no such host");
+      },
+      routeDns: async () => undefined,
+    };
+    const result = await provisionNamedTunnel({
+      workspaceId: "ws-network-blocked",
+      workspaceName: "Demo",
+      zone: "example.com",
+      account,
+    });
+    expect(result).toMatchObject({ ok: false, fallback: false, errorCode: CLOUDFLARE_NETWORK_BLOCKED });
+    expect(readTunnelState("ws-network-blocked")).toMatchObject({
+      preference: "named",
+      provider: "cloudflare-named",
     });
   });
 });

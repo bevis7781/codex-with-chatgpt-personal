@@ -87,6 +87,10 @@ whatever data it needs by itself.
    - `chatgptRepair.needed` is true (fix the connector first, then doctor again)
    - `namedRepair.needed` is true (user must log in to Cloudflare, then doctor again.
      Do not Delete the ChatGPT connector — the address did not change)
+   - `report.tunnel.code` is `CLOUDFLARE_NETWORK_BLOCKED`: stop and report that
+     this machine/network cannot reach Cloudflare API. Preserve the existing
+     Named Tunnel, endpoint, connector, Project and session state; do not loop
+     doctor, run repeated login repair, switch to Quick, or repair the connector.
    - `report.bridge` says 状态无法确认: the local bridge may still be running.
      Do not `c2c start`, do not Delete the connector, do not treat it as
      `chatgptRepair`. Wait and run doctor again.
@@ -762,6 +766,10 @@ the previous public address is gone. Doctor already started a new one.
 
 1. `c2c doctor -w <workspace> --json`. Doctor gate: do not open ChatGPT / send
    `[C2C]` until local is green, except reconnect settings pages.
+   If `report.tunnel.code` is `CLOUDFLARE_NETWORK_BLOCKED`, stop here and tell
+   the user that local/network access to Cloudflare is blocked or unavailable;
+   this is not a connector migration failure. Do not retry doctor in a loop,
+   switch to Quick, or mutate connector/Project/session state.
 2. If `namedRepair.needed`, tell the user `namedRepair.userMessage`, run
    `c2c tunnel login --json`, then doctor again. Do not Delete the connector.
 3. If `chatgptRepair.needed`, follow **reconnect after address reclaim**, then

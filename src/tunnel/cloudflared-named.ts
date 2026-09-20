@@ -3,6 +3,7 @@ import readline from "node:readline";
 import type { Logger } from "../logger/index.js";
 import { nullLogger } from "../logger/index.js";
 import { findBinary } from "./detect.js";
+import { classifyCloudflareError, isCloudflareNetworkBlockedMessage } from "./errors.js";
 import type { TunnelDoctorReport, TunnelProvider, TunnelStatus } from "./provider.js";
 
 const CONNECTED_RE = /registered tunnel connection/i;
@@ -14,6 +15,11 @@ export interface CloudflaredNamedTunnelOptions {
   logger?: Logger;
   binaryOverride?: string;
   startTimeoutMs?: number;
+  spawnImpl?: (
+    command: string,
+    args: string[],
+    options: { stdio: ["ignore", "pipe", "pipe"]; windowsHide: true }
+  ) => ChildProcess;
 }
 
 export function normalizeNamedTunnelHostname(hostname: string): string {
@@ -38,6 +44,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
   private readonly logger: Logger;
   private readonly binaryOverride?: string;
   private readonly startTimeoutMs: number;
+  private readonly spawnImpl: NonNullable<CloudflaredNamedTunnelOptions["spawnImpl"]>;
   private child: ChildProcess | null = null;
   private connected = false;
   private lastError: string | null = null;
@@ -52,6 +59,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
     this.logger = opts.logger ?? nullLogger;
     this.binaryOverride = opts.binaryOverride;
     this.startTimeoutMs = opts.startTimeoutMs ?? 45_000;
+    this.spawnImpl = opts.spawnImpl ?? ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
   }
 
   private binary(): string | null {
@@ -72,7 +80,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
     }
 
     return new Promise<string>((resolve, reject) => {
-      const child = spawn(
+      const child = this.spawnImpl(
         bin,
         [
           "tunnel",
@@ -88,6 +96,8 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
       this.connected = false;
       this.lastError = null;
       let settled = false;
+      let output = "";
+      let networkBlocked = false;
 
       const finish = (fn: () => void): void => {
         if (settled) return;
@@ -106,6 +116,11 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
       const scan = (stream: NodeJS.ReadableStream): void => {
         const rl = readline.createInterface({ input: stream });
         rl.on("line", (line) => {
+          output = `${output}\n${line}`.slice(-4096);
+          if (isCloudflareNetworkBlockedMessage(output)) {
+            networkBlocked = true;
+            this.lastError = line.slice(0, 400);
+          }
           if (CONNECTED_RE.test(line) && !this.connected) {
             this.connected = true;
             const url = this.publicUrl();
@@ -124,7 +139,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
       child.on("error", (error) => {
         this.child = null;
         this.connected = false;
-        finish(() => reject(error));
+        finish(() => reject(classifyCloudflareError(error)));
       });
       child.on("exit", (code) => {
         const wasStarting = !this.connected;
@@ -134,11 +149,13 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
         if (wasStarting) {
           finish(() =>
             reject(
-              new Error(
-                `cloudflared exited (code ${code}) before establishing the named tunnel${
-                  this.lastError ? `: ${this.lastError}` : ""
-                }`
-              )
+              networkBlocked
+                ? classifyCloudflareError(new Error(this.lastError ?? output))
+                : new Error(
+                    `cloudflared exited (code ${code}) before establishing the named tunnel${
+                      this.lastError ? `: ${this.lastError}` : ""
+                    }`
+                  )
             )
           );
         }

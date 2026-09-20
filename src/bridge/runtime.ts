@@ -60,6 +60,7 @@ export async function probeBridge(
     if (!response.ok) return null;
     const body = (await response.json()) as HealthPayload;
     if (body.service !== SERVICE_NAME) return null;
+    if (body.status !== "ok" || typeof body.workspaceId !== "string" || !body.workspaceId) return null;
     return body;
   } catch {
     return null;
@@ -69,6 +70,12 @@ export async function probeBridge(
 export type BridgeObservation =
   | { state: "healthy"; runtime: RuntimeState }
   | { state: "stopped"; runtime: RuntimeState | null; reason: "runtime_missing" | "pid_missing" }
+  | {
+      state: "stale";
+      runtime: RuntimeState;
+      reason: "pid_missing_workspace_mismatch";
+      otherWorkspaceId: string;
+    }
   | { state: "unknown"; runtime: RuntimeState | null; reason: "probe_failed" | "pid_unknown" | "workspace_mismatch" };
 
 function observePid(pid: number): "present" | "missing" | "unknown" {
@@ -94,6 +101,15 @@ export async function findBridgeObservation(workspaceId: string): Promise<Bridge
     return { state: "healthy", runtime };
   }
   if (health) {
+    const pid = observePid(runtime.pid);
+    if (pid === "missing") {
+      return {
+        state: "stale",
+        runtime,
+        reason: "pid_missing_workspace_mismatch",
+        otherWorkspaceId: health.workspaceId,
+      };
+    }
     return { state: "unknown", runtime, reason: "workspace_mismatch" };
   }
 
@@ -105,6 +121,35 @@ export async function findBridgeObservation(workspaceId: string): Promise<Bridge
 export async function findLiveBridge(workspaceId: string): Promise<RuntimeState | null> {
   const observation = await findBridgeObservation(workspaceId);
   return observation.state === "healthy" ? observation.runtime : null;
+}
+
+function sameRuntimeState(left: RuntimeState, right: RuntimeState): boolean {
+  return (
+    left.service === right.service &&
+    left.version === right.version &&
+    left.workspaceId === right.workspaceId &&
+    left.workspaceRoot === right.workspaceRoot &&
+    left.pid === right.pid &&
+    left.port === right.port &&
+    left.adminToken === right.adminToken &&
+    left.publicUrl === right.publicUrl &&
+    left.startedAt === right.startedAt
+  );
+}
+
+/**
+ * Remove a runtime record only when the exact record that was observed as
+ * stale is still present. A changed or unreadable record remains untouched.
+ */
+export function clearStaleRuntimeState(workspaceId: string, expected: RuntimeState): boolean {
+  const current = readRuntimeState(workspaceId);
+  if (!current || !sameRuntimeState(current, expected)) return false;
+  try {
+    fs.rmSync(runtimeFile(workspaceId), { force: false });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export { SERVICE_NAME, VERSION };
