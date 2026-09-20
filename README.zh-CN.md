@@ -1,20 +1,49 @@
-# Codex with ChatGPT
+# Codex with ChatGPT Personal Fork
 
 [English](README.md) | **简体中文**
 
 > ChatGPT 负责思考，Codex 负责干活。
 
+这是 [`XiaoDuoYa/codex-with-chatgpt`](https://github.com/XiaoDuoYa/codex-with-chatgpt)
+的 **Personal Fork**。它保留上游“ChatGPT 负责推理和审查、本地 Codex Harness
+负责执行”的思路，并加入了受边界约束的 V0.1 Taskbook 工作流。
+
 ## 解决什么问题
 
 ChatGPT 付费订阅的网页版额度大量闲置，Codex 却在消耗紧张的 API 额度做
 规划和 Review。本项目把"思考"交给你已付费的网页版 ChatGPT，Codex 只负责
-执行。不用 API Key、不搞逆向代理——官方网页 + 只读 MCP 桥接。
+执行。不用 API Key、不搞逆向代理——官方网页 + 受控 MCP 桥接。
 
 ## 这是什么
 
 把 ChatGPT 网页版变成 Codex 编码会话的"规划与审查大脑"，而执行权完全保留在
-Codex 手里。你的仓库永远不会被上传——ChatGPT 通过一条安全的、OAuth 保护的
-**只读** MCP 连接，按需读取当前工作区里它真正需要的那几行代码。
+Codex 手里。你的仓库永远不会被上传——ChatGPT 通过安全的、OAuth 保护的 MCP
+连接按需读取工作区内容；如果明确授予 `taskbook.submit`，它也只能提交受边界
+约束的 Taskbook，不会直接修改项目或运行命令。
+
+## V0.1 Taskbook 工作流
+
+1. Web ChatGPT 在明确授权独立的 `taskbook.submit` scope 后，通过
+   `submit_taskbook` 提交 `title + body`。
+2. C2C 把不透明的任务存入工作区范围内的状态，不写入项目文件，不允许调用方
+   选择工作区或路径，也不会启动进程或自动执行。
+3. 用户在本地发送一次独立的 `Do`。
+4. 本地 Harness 最多领取并执行一个符合条件的任务，记录验证和证据，然后停止。
+5. Web ChatGPT 可以通过现有只读工具独立审查真实 diff、测试和执行证据。
+
+`Web submit → local Do → one-task execution → evidence → Web audit`
+
+远程权限刻意保持狭窄：没有通用的 `write_file`、删除、Shell 或 exec 工具，调用方
+不能选择项目路径或工作区。`taskbook.submit` 是独立的显式变更 scope，不属于默认
+读取权限；提交任务本身永远不会自动执行。
+
+## 安装与配置这个 Fork
+
+1. 克隆本仓库：`https://github.com/bevis7781/codex-with-chatgpt-personal.git`。
+2. 在 checkout 中执行 `corepack pnpm install` 和 `corepack pnpm build`。
+3. 使用现有 C2C setup / pairing 流程配置工作区连接器。
+4. 如果需要让 Web ChatGPT 提交 Taskbook，显式授权 `taskbook.submit`，并在支持的
+   本地 Harness 中加载仓库内的 `skill/PERSONAL-TASKBOOK.md` 来使用 `Do` / `Read`。
 
 ## 一段话安装（纯小白专用）
 
@@ -27,8 +56,8 @@ Agent（Codex），然后去倒杯咖啡：
 
 1. 环境自检：需要 git 和 Node.js ≥ 20，缺什么就自动安装
   （macOS 用 Homebrew，Windows 用 winget），同时安装 cloudflared。
-2. 下载：把 https://github.com/XiaoDuoYa/codex-with-chatgpt 克隆到
-   ~/codex-with-chatgpt（已存在就 git pull 更新）。
+2. 下载：把 https://github.com/bevis7781/codex-with-chatgpt-personal 克隆到
+   ~/codex-with-chatgpt-personal（已存在就 git pull 更新）。
 3. 构建：在该目录里执行 corepack pnpm install 和 corepack pnpm build。
 4. 安装 Skill：把仓库里的 skill/SKILL.md 复制到
    ~/.codex/skills/codex-with-chatgpt/SKILL.md，并把文件中
@@ -89,11 +118,11 @@ Ready.
                         ▼          │
              ┌─────────────────────┐
              │      C2C Bridge     │   仅监听本机回环地址
-             │  只读 MCP           │   OAuth 2.1 + 一次性配对码
+             │  受控 MCP           │   OAuth 2.1 + 一次性配对码
              │  OAuth + 配对       │   Cloudflare Quick Tunnel
              │  Tunnel 管理        │
              └──────────┬──────────┘
-                        │  只读
+                        │  受控访问
                         ▼
              ┌─────────────────────┐          ┌─────────────────────┐
              │     本地工作区      │◀─────────│    Codex Harness    │
@@ -104,17 +133,18 @@ Ready.
 - **控制面（Computer Use）**：Codex 与 ChatGPT 之间只交换极小的结构化 `[C2C]`
   状态消息——`INIT → PLAN → EXECUTED → REVIEW → DONE`。绝不粘贴 diff、日志
   或文件内容。
-- **数据面（MCP）**：ChatGPT 缺什么自己拉什么，共 9 个只读工具：
-  `workspace_info`、`list_directory`、`read_file`、`search_workspace`、
-  `git_status`、`git_diff`、`test_status`、`execution_summary`、
-  `execution_output`。
+- **数据面（MCP）**：ChatGPT 通过现有只读的工作区、diff、测试和证据工具按需
+  读取内容。拥有显式 `taskbook.submit` scope 时，还可以把 `title + body` 提交到
+  工作区范围内的 C2C 任务状态；这不会写入项目文件或运行命令。
 - **独立审查**：Codex 执行完毕后，ChatGPT 通过 MCP 亲自检查真实的 git diff
   和测试记录——绝不因为 Codex 说"测试全过"就直接相信。
 
 ## 安全模型（简版）
 
-- **从构造上只读**：服务端根本不存在写文件/删除/Shell/提交类工具，任何提示
-  注入都无法启用它们。
+- **远程权限刻意狭窄**：服务端根本不存在通用写文件/删除/Shell/exec 类工具，
+  调用方也不能选择项目路径或工作区；任何提示注入都无法启用它们。
+- **Taskbook 提交显式且不执行**：`taskbook.submit` 不属于默认读取 scope；提交只
+  会把有边界的文本放入工作区状态，永远不会启动执行。
 - **一个工作区 = 一道边界**：每个令牌绑定单一工作区；路径校验基于规范化
   realpath（symlink、`../`、绝对路径逃逸全部被拦截并有测试覆盖）。
 - **敏感文件永不外泄**：`.env*`、密钥、SSH、各类凭据默认拒绝
@@ -131,7 +161,7 @@ Ready.
 ```bash
 pnpm install
 pnpm build          # 产出 dist/，暴露 c2c 命令
-pnpm test           # vitest：146 个测试（路径安全、OAuth、配对、MCP 端到端）
+pnpm test           # vitest 测试套件（路径安全、OAuth、配对、MCP 端到端）
 
 c2c setup           # 一条命令：Bridge + 隧道 + 配对码
 c2c sandbox-allow   # 把本地设置目录加入 Codex 沙箱白名单（macOS / Windows）
@@ -149,7 +179,7 @@ c2c status / doctor / pair / unpair / logs / stop
 ```
 src/
   bridge/     本机回环 HTTP 服务、端口自动恢复、管理 API
-  mcp/        9 个只读工具、无状态 Streamable HTTP
+  mcp/        只读审查工具 + 受边界约束的 Taskbook 提交
   auth/       OAuth 2.1（PKCE、动态注册、refresh 轮换、吊销）
   pairing/    一次性配对码（CSPRNG、TTL、限速）
   workspace/  路径收敛、敏感文件策略、搜索、git
@@ -162,10 +192,12 @@ tests/        单元 + 集成测试
 docs/         架构 / 协议 / 安全 / 故障排查
 ```
 
-## 状态与声明
+## V0.1 支持范围与边界
 
-V1。已端到端验证：Bridge、OAuth + 配对、公网隧道、ChatGPT 连接器配置、
-零操作首次配置体验。
+V0.1 已在当前 Windows/Codex Harness 路径上验证，包括受边界约束的本地
+Taskbook 工作流。便携 Rule 已提供，但不会自动声称其他 Harness 或平台也已验证。
+本项目不声称对任意外部副作用提供 exactly-once 保证；不支持或未知的 NTFS
+reparse 类型仍在已验证的 V0.1 威胁模型之外。
 
 **非官方社区项目，与 OpenAI 无关联，未获其背书。**
 
