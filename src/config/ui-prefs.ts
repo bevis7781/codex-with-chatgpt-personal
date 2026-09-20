@@ -1,5 +1,6 @@
 import path from "node:path";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "./paths.js";
+import { parseZoneInput } from "../tunnel/hostname.js";
 
 export type SetupMode = "auto" | "manual";
 
@@ -25,16 +26,19 @@ export const SETUP_CHOICE_PROMPT = [
 interface StoredUiPrefs {
   developerModeEnabled?: boolean;
   setupMode?: SetupMode;
+  preferredNamedZone?: string;
   updatedAt: string;
 }
 
 export interface UiPrefsView {
   developerModeEnabled: boolean;
   setupMode: SetupMode | null;
+  preferredNamedZone: string | null;
   setupChoicePrompt: string;
   remembered: {
     developerMode: boolean;
     setupMode: boolean;
+    preferredNamedZone: boolean;
   };
 }
 
@@ -46,9 +50,12 @@ function readStored(): StoredUiPrefs | null {
   const raw = readJsonIfExists<StoredUiPrefs>(prefsFile());
   if (!raw || typeof raw !== "object") return null;
   const setupMode = raw.setupMode === "auto" || raw.setupMode === "manual" ? raw.setupMode : undefined;
+  const preferredNamedZone =
+    typeof raw.preferredNamedZone === "string" ? parseZoneInput(raw.preferredNamedZone) ?? undefined : undefined;
   return {
     developerModeEnabled: raw.developerModeEnabled === true,
     setupMode,
+    preferredNamedZone,
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : new Date().toISOString(),
   };
 }
@@ -57,13 +64,16 @@ export function readUiPrefs(): UiPrefsView {
   const stored = readStored();
   const developerModeEnabled = stored?.developerModeEnabled === true;
   const setupMode = stored?.setupMode ?? null;
+  const preferredNamedZone = stored?.preferredNamedZone ?? null;
   return {
     developerModeEnabled,
     setupMode,
+    preferredNamedZone,
     setupChoicePrompt: SETUP_CHOICE_PROMPT,
     remembered: {
       developerMode: developerModeEnabled,
       setupMode: setupMode !== null,
+      preferredNamedZone: preferredNamedZone !== null,
     },
   };
 }
@@ -71,12 +81,19 @@ export function readUiPrefs(): UiPrefsView {
 export interface UiPrefsPatch {
   developerModeEnabled?: true;
   setupMode?: SetupMode;
+  preferredNamedZone?: string | null;
 }
 
 export function mergeUiPrefs(patch: UiPrefsPatch): UiPrefsView {
   if (patch.setupMode !== undefined && !SETUP_MODES.includes(patch.setupMode)) {
     throw new Error(`setup-mode must be one of ${SETUP_MODES.join(", ")}`);
   }
+  const preferredNamedZone =
+    patch.preferredNamedZone === undefined
+      ? readStored()?.preferredNamedZone
+      : patch.preferredNamedZone === null
+        ? undefined
+        : normalizePreferredNamedZone(patch.preferredNamedZone);
   const previous = readStored();
   const setupMode = patch.setupMode ?? previous?.setupMode;
   const stored: StoredUiPrefs = {
@@ -88,6 +105,13 @@ export function mergeUiPrefs(patch: UiPrefsPatch): UiPrefsView {
     stored.developerModeEnabled = true;
   }
   if (setupMode) stored.setupMode = setupMode;
+  if (preferredNamedZone) stored.preferredNamedZone = preferredNamedZone;
   writeSecureJson(prefsFile(), stored);
   return readUiPrefs();
+}
+
+export function normalizePreferredNamedZone(input: string): string {
+  const normalized = parseZoneInput(input);
+  if (!normalized) throw new Error("named-zone must be a valid domain");
+  return normalized;
 }

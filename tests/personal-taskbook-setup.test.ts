@@ -29,7 +29,49 @@ function installedFile(codexHome: string, relative: string): string {
   return path.join(codexHome, "skills", relative);
 }
 
+function personalFirstSetupSection(): string {
+  const skill = fs.readFileSync(path.join(repoRoot, "skill", "SKILL.md"), "utf8");
+  const start = skill.indexOf("## Workflow: Personal-first first-time setup");
+  const end = skill.indexOf("## Legacy first-time setup", start);
+  if (start < 0 || end <= start) throw new Error("Personal-first setup section is missing or malformed");
+  return skill.slice(start, end);
+}
+
 describe("Personal Taskbook Skill setup", () => {
+  it("defines the Personal-first setup handoff without the legacy browser flow", () => {
+    const section = personalFirstSetupSection();
+
+    expect(section).toContain("standalone `配置`");
+    expect(section).toContain("c2c prefs get --json");
+    expect(section).toContain("preferredNamedZone");
+    expect(section).toContain("c2c prefs set --named-zone <your Cloudflare zone> --json");
+    expect(section).toContain("c2c skill install --json");
+    expect(section).toContain("c2c sandbox-allow --json");
+    expect(section).toContain("c2c setup -w <workspace> --json");
+    expect(section).toContain("automatically provisions Named Tunnel");
+    expect(section).toContain("do not silently fall");
+    expect(section).toContain("Name: <connectorName>");
+    expect(section).toContain("Description: Securely connect ChatGPT to the current Codex workspace for planning and review.");
+    expect(section).toContain("Server URL: <mcpUrl>");
+    expect(section).toContain("Authentication: OAuth");
+    expect(section).toContain("c2c pair -w <workspace> --json");
+    expect(section.indexOf("c2c setup -w <workspace> --json")).toBeLessThan(
+      section.indexOf("c2c pair -w <workspace> --json")
+    );
+    expect(section).toContain("This Project defaults to its declared C2C connector/workspace.");
+    expect(section).toContain("Cross-workspace use is allowed only when the user explicitly asks.");
+
+    expect(section).not.toContain("setupMode");
+    expect(section).not.toContain("setupChoicePrompt");
+    expect(section).not.toContain("Connection choice");
+    expect(section).not.toContain("c2c prefs --json");
+    expect(section).not.toContain("chatgpt.com/plugins");
+    expect(section).not.toContain("workspace_info");
+    expect(section).not.toContain("read_file");
+    expect(section).not.toContain("c2c session set");
+    expect(section).not.toContain("文件读取测试通过");
+  });
+
   it("installs the explicit Rule without AGENTS.md or manual path wiring", () => {
     const codexHome = externalTempDir("c2c-personal-skill-home");
     const stateDir = externalTempDir("c2c-personal-skill-state");

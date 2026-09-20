@@ -66,9 +66,18 @@ read scopes, and never auto-executes.
 3. Run `node bin/c2c.js skill install`; it installs the C2C Skill and the
    dedicated Personal Taskbook Skill into the local Codex Skill directory.
    `c2c setup` repeats this step safely for existing installations.
-4. Configure the workspace connector through the existing C2C setup and
-   pairing flow.
-5. If Web ChatGPT should submit Taskbooks, explicitly authorize
+4. On a new machine, set the local Named Tunnel zone once with
+   `node bin/c2c.js prefs set --named-zone <your Cloudflare zone> --json`.
+   This preference stays on the machine and is not a public project default.
+5. In the already bound C2C Skill context, tell Codex **`配置`**. It quietly
+   prepares the local workspace, then gives you one compact connector form:
+   Name, Description, Server URL, and Authentication = OAuth.
+6. Create the connector yourself. When it is ready to authorize, Codex gives
+   you a fresh one-time pairing code; after you report authorization success it
+   stops and gives the short Project routing instruction. The Personal-first
+   path does not drive the ChatGPT browser, create/delete connectors, create a
+   Project/chat, or force a smoke test.
+7. If Web ChatGPT should submit Taskbooks, explicitly authorize
    `taskbook.submit`. In the installed, explicitly bound Personal Taskbook
    context, standalone `Do` / `Read` then use the local Rule automatically;
    ordinary mentions in unrelated conversations do not activate it.
@@ -90,13 +99,15 @@ read scopes, and never auto-executes.
 4. 安装 Skill：运行 `node bin/c2c.js skill install --json`。它会自动安装
    C2C Skill 和 Personal Taskbook 入口并填好本地路径，不要手动修改
    `AGENTS.md` 或复制 Rule 文件。
-5. 首次配置：按 SKILL.md 里的 first-time setup 流程执行
-  （运行 c2c setup，用内置浏览器打开 ChatGPT 配置连接器并输入配对码）。
-   全程只用内置浏览器，禁止打开任何第三方浏览器。
-6. 只有遇到需要我登录（ChatGPT / Cloudflare）、验证码或两步验证时才叫我，
-   而且一次只告诉我一个动作。
-7. 完成后给我看 ✓ 清单，并确认文件读取测试通过。我不懂 MCP、OAuth、
-   Tunnel、端口这些词，不要向我解释；出了问题先自己修。
+5. 新机器第一次配置前，运行 `node bin/c2c.js prefs set --named-zone <你的 Cloudflare 域名> --json`
+   保存本机固定域名默认区域；这个偏好只保存在本机，不写入项目或公开源码。
+6. 首次配置：在已经绑定的 C2C Skill 上执行 Personal-first `配置` 流程。
+   本地准备完成后，只把连接器的 Name、Description、Server URL、
+   Authentication = OAuth 四项交给我，我自己创建连接器。
+7. 等我说连接器已创建并准备授权后，再生成新的配对码交给我；授权完成后
+   停止，不要自动打开 ChatGPT、建 Project/chat 或做文件读取测试。
+8. 只有遇到需要我登录（ChatGPT / Cloudflare）、验证码或两步验证时才叫我，
+   而且一次只告诉我一个动作；完成后给我短的 Project 连接器路由说明。
 ```
 
 
@@ -116,14 +127,19 @@ I am a non-technical user — do everything yourself:
 4. Install the Skills: run `node bin/c2c.js skill install --json`. This
    installs both the C2C Skill and the Personal Taskbook entry point and fills
    local paths automatically; do not edit `AGENTS.md` or copy the Rule by hand.
-5. First-time setup: follow the SKILL.md "first-time setup" workflow
-   (run c2c setup, configure the ChatGPT connector in the BUILT-IN browser,
-   enter the pairing code). Never open a third-party browser.
-6. Only interrupt me for logins (ChatGPT / Cloudflare), CAPTCHAs or 2FA —
-   and give me exactly ONE action at a time.
-7. When done, show me the ✓ checklist and confirm the file-read test passed.
-   I don't know what MCP, OAuth, tunnels or ports are. Don't explain them.
-   If anything breaks, fix it yourself first.
+5. On a new machine, save the local Named Tunnel zone once with
+   `node bin/c2c.js prefs set --named-zone <your Cloudflare zone> --json`.
+   Keep this preference local; do not put it in the project or public source.
+6. First-time setup: in the already bound C2C Skill context, run the
+   Personal-first `配置` flow. After local preparation, give me only the
+   connector fields Name, Description, Server URL, and Authentication = OAuth;
+   I will create the connector myself.
+7. After I report that the connector is ready to authorize, generate a fresh
+   pairing code and give it to me. After authorization, stop; do not drive the
+   ChatGPT browser, create a Project/chat, or run a file-read smoke test.
+8. Only interrupt me for logins (ChatGPT / Cloudflare), CAPTCHAs or 2FA, and
+   give me exactly ONE action at a time. Finish with the short Project routing
+   instruction. If anything breaks, use the existing repair path on demand.
 ```
 
 
@@ -137,40 +153,39 @@ anytime. / Skill 每天自动检查一次 GitHub，有新版本会自动更新�
 *The sections below are in English. 以下详细内容为英文，中文完整版见
 [README.zh-CN.md](README.zh-CN.md)。*
 
-## Install → Setup → Use (manual)
+## Install → Personal setup → Use (manual)
 
 1. Install the Skills: from the checkout run `node bin/c2c.js skill install`.
    This installs the C2C Skill and the explicit Personal Taskbook entry point.
-2. Tell Codex: **"Set up Codex with ChatGPT."** (中文: "使用 Codex with ChatGPT 完成首次配置。")
-3. Use Codex normally: **"Use Codex with ChatGPT to implement XXX."** For a
-   bound Personal Taskbook conversation, standalone `Read` is view-only and
-   standalone `Do` runs at most one eligible task before stopping.
+2. On a new machine, set the local Named Tunnel zone once with
+   `c2c prefs set --named-zone <your Cloudflare zone> --json`. In the bound C2C
+   Skill context, tell Codex: **"配置"**. Personal setup does not ask you to
+   choose Quick vs Named or ask for the domain again.
+3. Fill the four connector fields Codex gives you. When you report that the
+   connector is ready to authorize, use the fresh pairing code Codex provides.
+4. After authorization, use Codex normally: **"Use Codex with ChatGPT to
+   implement XXX."** For a bound Personal Taskbook conversation, standalone
+   `Read` is view-only and standalone `Do` runs at most one eligible task before
+   stopping.
 
-That's the whole manual. You don't need to know what MCP, OAuth, tunnels,
-ports or localhost are — Codex configures everything automatically and you
-just see:
+That's the whole manual. You don't need to know what MCP, tunnels, ports or
+localhost are. You create the connector with the four fields shown by Codex;
+Codex handles local preparation, automatically uses the saved Named zone for a
+new workspace, then stops after your authorization report.
 
 ```
-Codex with ChatGPT
+Name: Codex with ChatGPT · <workspace>
+Description: Securely connect ChatGPT to the current Codex workspace for planning and review.
+Server URL: <the Server URL Codex provides>
+Authentication: OAuth
 
-✓ Project detected
-✓ Personal Taskbook ready
-✓ Workspace Bridge started
-✓ Secure connection established
-✓ ChatGPT connected
-✓ File read test passed
-
-Ready.
+After authorization, Codex provides the Project routing instruction and stops.
 ```
 
-The only steps that may need you: logging into ChatGPT (and, if you want a
-stable hostname, logging into Cloudflare once). A **new** workspace also asks
-you to create a ChatGPT Project (collection) once — pick **project-only
-memory**, name it after the workspace. If the sidebar has no Projects row,
-hover **Chats**, open the … menu, and choose **Organize by project**. Codex
-then saves that collection link and starts chats from that page. Existing
-workspaces that already have a C2C chat stay on the old one-conversation
-style until you ask to switch.
+The only steps that may need you are entering the connector fields, authorizing
+it with the fresh pairing code, and logging into Cloudflare if Named setup
+requires it. Project creation and connector verification are left to you and
+are not forced by the Personal-first setup path.
 
 ### Optional stable hostname
 
@@ -178,12 +193,13 @@ The default public address is a temporary Cloudflare URL. It changes when the
 bridge restarts, and Codex repairs ChatGPT by deleting that workspace's
 connector and adding it again.
 
-If you have a Cloudflare account and a domain already on Cloudflare, first-time
-setup (and the next coding session, once) will ask whether you want a stable
-hostname such as `c2c-<project>.your-domain.com`. That path opens a browser so
-you can authorize Cloudflare. After that, the ChatGPT connector keeps working
-across restarts. If you skip it, or the login fails, Codex stays on the temporary
-address — same features, just a slower repair.
+Personal-first setup automatically uses the locally saved Named Tunnel zone for
+a new workspace and derives a hostname such as `c2c-<project>.your-domain.com`;
+it does not ask you to choose Quick vs Named or ask for the domain again. If
+Cloudflare authentication is required, Codex asks only for that login. A Named
+setup failure is reported truthfully and does not silently switch the Personal
+path to Quick. The explicit `c2c tunnel choose` command remains available for
+legacy or deliberate Quick/Named choices.
 
 Credentials stay in the OS app state directory, not in the project.
 

@@ -23,7 +23,8 @@ describe("ui prefs", () => {
     const prefs = readUiPrefs();
     expect(prefs.developerModeEnabled).toBe(false);
     expect(prefs.setupMode).toBeNull();
-    expect(prefs.remembered).toEqual({ developerMode: false, setupMode: false });
+    expect(prefs.preferredNamedZone).toBeNull();
+    expect(prefs.remembered).toEqual({ developerMode: false, setupMode: false, preferredNamedZone: false });
     expect(prefs.setupChoicePrompt).toBe(SETUP_CHOICE_PROMPT);
     expect(prefs.setupChoicePrompt).toContain("AI 自动化配置（预览版）");
     expect(prefs.setupChoicePrompt).toContain("手动教学配置");
@@ -48,6 +49,21 @@ describe("ui prefs", () => {
     const auto = mergeUiPrefs({ setupMode: "auto" });
     expect(auto.setupMode).toBe("auto");
     expect(auto.developerModeEnabled).toBe(true);
+  });
+
+  it("normalizes and remembers the local preferred Named zone", () => {
+    dirs.push(isolateStateDir());
+    const next = mergeUiPrefs({ preferredNamedZone: "https://Example.COM/" });
+    expect(next.preferredNamedZone).toBe("example.com");
+    expect(next.remembered.preferredNamedZone).toBe(true);
+    const raw = JSON.parse(fs.readFileSync(prefsFile(), "utf8")) as { preferredNamedZone?: string };
+    expect(raw.preferredNamedZone).toBe("example.com");
+  });
+
+  it("rejects an invalid preferred Named zone", () => {
+    dirs.push(isolateStateDir());
+    expect(() => mergeUiPrefs({ preferredNamedZone: "localhost" })).toThrow(/named-zone/);
+    expect(readUiPrefs().preferredNamedZone).toBeNull();
   });
 
   it("rejects an unknown setup mode", () => {

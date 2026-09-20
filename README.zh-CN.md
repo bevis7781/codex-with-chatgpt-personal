@@ -44,8 +44,14 @@ Codex 手里。你的仓库永远不会被上传——ChatGPT 通过安全的、
 3. 运行 `node bin/c2c.js skill install`，它会把 C2C Skill 和独立的
    Personal Taskbook Skill 自动安装到本地 Codex Skill 目录；`c2c setup` 对已有安装
    也会安全地重复这一步。
-4. 使用现有 C2C setup / pairing 流程配置工作区连接器。
-5. 如果需要让 Web ChatGPT 提交 Taskbook，显式授权 `taskbook.submit`。在已经安装并
+4. 新机器第一次配置前，运行 `node bin/c2c.js prefs set --named-zone <你的 Cloudflare 域名> --json`，
+   保存本机固定域名默认区域；这个偏好只保存在本机，不写入项目或公开源码。
+5. 在已经绑定的 C2C Skill 上对 Codex 说 **`配置`**。它会安静完成本地准备，
+   然后只给你一份连接器表单：Name、Description、Server URL、Authentication = OAuth。
+6. 你自己创建连接器；等你说连接器已经创建并准备授权后，Codex 才生成新的一次性
+   配对码。你报告授权成功后流程就结束，不会自动操作 ChatGPT 浏览器、创建/删除连接器、
+   创建 Project/聊天或强制做连通性测试。
+7. 如果需要让 Web ChatGPT 提交 Taskbook，显式授权 `taskbook.submit`。在已经安装并
    明确绑定当前工作区的 Personal Taskbook 上下文中，之后的独立 `Do` / `Read` 会自动
    使用本地 Rule；普通对话里提到这些词不会触发它。
 
@@ -65,49 +71,52 @@ Agent（Codex），然后去倒杯咖啡：
 3. 构建：在该目录里执行 corepack pnpm install 和 corepack pnpm build。
 4. 安装 Skill：运行 `node bin/c2c.js skill install --json`。它会自动安装 C2C Skill
    和 Personal Taskbook 入口并填好本地路径，不要手动修改 `AGENTS.md` 或复制 Rule。
-5. 首次配置：按 SKILL.md 里的 first-time setup 流程执行
-  （运行 c2c setup，用内置浏览器打开 ChatGPT 配置连接器并输入配对码）。
-   全程只用内置浏览器，禁止打开任何第三方浏览器。
-6. 只有遇到需要我登录（ChatGPT / Cloudflare）、验证码或两步验证时才叫我，
-   而且一次只告诉我一个动作。
-7. 完成后给我看 ✓ 清单，并确认文件读取测试通过。我不懂 MCP、OAuth、
-   Tunnel、端口这些词，不要向我解释；出了问题先自己修。
+5. 新机器第一次配置前，运行 `node bin/c2c.js prefs set --named-zone <你的 Cloudflare 域名> --json`，
+   保存本机固定域名默认区域；这个偏好只保存在本机，不写入项目或公开源码。
+6. 首次配置：在已经绑定的 C2C Skill 上执行 Personal-first `配置` 流程。
+   本地准备完成后，只把连接器的 Name、Description、Server URL、
+   Authentication = OAuth 四项交给我，我自己创建连接器。
+7. 等我说连接器已创建并准备授权后，再生成新的配对码交给我；授权完成后停止，
+   不要自动打开 ChatGPT、建 Project/聊天或做文件读取测试。
+8. 只有遇到需要我登录（ChatGPT / Cloudflare）、验证码或两步验证时才叫我，
+   而且一次只告诉我一个动作；完成后给我短的 Project 连接器路由说明。
 ```
 
 **更新**：Skill 每天自动检查一次 GitHub，有新版本会自动更新并继续任务，
 无需任何操作；也可以随时对 Codex 说"更新 Codex with ChatGPT"。
 
-## 安装 → 配置 → 使用（手动版）
+## 安装 → Personal 配置 → 使用（手动版）
 
 1. 安装 Skill：在 checkout 中运行 `node bin/c2c.js skill install`，它会同时安装 C2C
    Skill 和明确的 Personal Taskbook 入口。
-2. 对 Codex 说：**"使用 Codex with ChatGPT 完成首次配置。"**
-3. 之后正常使用：**"使用 Codex with ChatGPT，帮我实现 XXX。"** 在已绑定的 Personal
-   Taskbook 对话中，独立 `Read` 只查看，独立 `Do` 最多执行一个符合条件的任务后停止。
+2. 在新机器上先用 `c2c prefs set --named-zone <你的 Cloudflare 域名> --json` 保存一次本地
+   Personal 固定域名默认区域；然后在已绑定的 C2C Skill 上对 Codex 说：**"配置"**。
+   Personal 配置不会再让你选择临时/固定地址，也不会再次询问域名。
+3. 填写 Codex 给出的四项连接器字段。等你报告连接器准备授权后，输入 Codex 新生成的
+   配对码；授权完成后即可正常使用：**"使用 Codex with ChatGPT，帮我实现 XXX。"**
+   在已绑定的 Personal Taskbook 对话中，独立 `Read` 只查看，独立 `Do` 最多执行一个
+   符合条件的任务后停止。
 
-说明书到此结束。你不需要知道 MCP、OAuth、Tunnel、端口、localhost 是什么——
-Codex 会自动完成所有配置，你只会看到：
+说明书到此结束。你不需要知道 MCP、Tunnel、端口、localhost 是什么。新工作区会自动使用
+保存的固定域名默认区域；你自己用 Codex 给出的四项字段创建并授权连接器，之后 Codex 会给出
+Project 路由说明并停止：
 
 ```
-Codex with ChatGPT
+Name: Codex with ChatGPT · <workspace>
+Description: Securely connect ChatGPT to the current Codex workspace for planning and review.
+Server URL: <Codex 提供的 Server URL>
+Authentication: OAuth
 
-✓ 当前项目已识别
-✓ Personal Taskbook 已就绪
-✓ Workspace Bridge 已启动
-✓ 安全连接已建立
-✓ ChatGPT 已连接
-✓ 文件读取测试通过
-
-Ready.
+授权完成后，Codex 提供 Project 连接器路由说明并停止。
 ```
 
-唯一可能需要你动手的步骤：登录 ChatGPT（如果要用固定域名，再登录一次 Cloudflare）。**新仓库**还会请你在 ChatGPT 里建一次项目（合集）：名字用仓库名，记忆选「仅限项目记忆」。侧栏如果没有「项目」，把鼠标放在「聊天」上，点右边三个点，选「按项目整理」。之后对话都从合集页开，不用回首页。已经在用的仓库默认还是原来的一条长对话，除非你说要改成 Project。
+你可能需要自己输入连接器字段、使用新的配对码完成授权，以及在固定公网连接需要时登录 Cloudflare。Project 创建和连接器验证由你自行决定，Personal-first 配置不会强制执行。
 
 ### 可选的固定域名
 
 默认公网地址是临时的，桥重启后会变。Codex 会删掉这个项目的 ChatGPT 插件再按新地址加回去。
 
-如果你有 Cloudflare 账号，并且域名已经加在 Cloudflare 上，首次配置时（老用户则在下一次编码时问一次）会问你要不要用固定域名，例如 `c2c-<项目>.你的域名`。选是的话，浏览器里授权一次 Cloudflare 即可。之后重启一般不用再改插件。没有账号、不想用、登录失败：继续用临时地址，功能一样，只是修复更慢。
+Personal-first 配置会自动使用本机保存的固定域名默认区域，为新工作区生成类似 `c2c-<项目>.你的域名` 的地址；不会再让你选择临时/固定地址，也不会再次询问域名。如果确实需要 Cloudflare 授权，只要求你完成这一次登录。固定域名配置失败时会如实报告，不会在 Personal 路径中静默切换临时地址。显式 `c2c tunnel choose` 仍保留，供兼容或有意选择临时/固定地址时使用。
 
 凭证放在系统目录，不进项目。
 

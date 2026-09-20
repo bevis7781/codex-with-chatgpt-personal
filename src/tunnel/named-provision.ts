@@ -7,6 +7,7 @@ import { suggestedNamedHostname } from "./hostname.js";
 import { normalizeNamedTunnelHostname } from "./cloudflared-named.js";
 import {
   NAMED_FALLBACK_MESSAGE,
+  readTunnelState,
   writeTunnelState,
   type TunnelState,
 } from "./state.js";
@@ -189,6 +190,8 @@ export async function provisionNamedTunnel(opts: {
   workspaceName: string;
   zone: string;
   hostname?: string;
+  /** Personal setup uses false so an unavailable Named path stays truthful. */
+  fallbackToQuick?: boolean;
   account?: CloudflaredAccount;
 }): Promise<ProvisionNamedResult> {
   const account = opts.account ?? new ProcessCloudflaredAccount();
@@ -198,7 +201,7 @@ export async function provisionNamedTunnel(opts: {
       ? normalizeNamedTunnelHostname(opts.hostname)
       : suggestedNamedHostname(opts.zone, opts.workspaceName, opts.workspaceId);
   } catch (error) {
-    return fallbackState(opts.workspaceId, "invalid_hostname", (error as Error).message);
+    return provisionFailure(opts.workspaceId, "invalid_hostname", (error as Error).message, opts.fallbackToQuick);
   }
 
   const tunnelName = `c2c-${opts.workspaceId}`;
@@ -219,7 +222,7 @@ export async function provisionNamedTunnel(opts: {
     });
     return { ok: true, state, fallback: false };
   } catch (error) {
-    return fallbackState(opts.workspaceId, "provision_failed", (error as Error).message);
+    return provisionFailure(opts.workspaceId, "provision_failed", (error as Error).message, opts.fallbackToQuick);
   }
 }
 
@@ -233,7 +236,20 @@ export function chooseQuickTunnel(workspaceId: string, fallbackReason?: string):
   });
 }
 
-function fallbackState(workspaceId: string, reason: string, error: string): ProvisionNamedResult {
+function provisionFailure(
+  workspaceId: string,
+  reason: string,
+  error: string,
+  fallbackToQuick = true
+): ProvisionNamedResult {
+  if (!fallbackToQuick) {
+    return {
+      ok: false,
+      state: readTunnelState(workspaceId),
+      fallback: false,
+      error,
+    };
+  }
   const state = chooseQuickTunnel(workspaceId, reason);
   return {
     ok: true,

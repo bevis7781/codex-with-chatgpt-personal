@@ -5,7 +5,9 @@ description: >
   while Codex keeps full execution ownership. Use when the user says
   "使用 Codex with ChatGPT ..." / "Set up Codex with ChatGPT" / "用 ChatGPT 规划",
   when they ask to connect ChatGPT to the current workspace, disconnect it,
-  or run a task through the ChatGPT planning loop.
+  or run a task through the ChatGPT planning loop. In the already bound Personal
+  C2C workspace, also use it when the user says standalone "配置" to start the
+  Personal-first setup path.
 ---
 
 # Codex with ChatGPT
@@ -29,28 +31,23 @@ whatever data it needs by itself.
    Never touch OAuth tokens, cookies, or session storage.
 4. If something fails, run `c2c doctor` and repair silently. Only involve the user
    for logins, CAPTCHA, 2FA, explicit consent screens, or **guided manual
-   ChatGPT setup** below — and then give them ONE action.
-   Before the first ChatGPT connection on this machine, `c2c prefs --json`:
-   - `setupMode` missing: tell the user exactly `setupChoicePrompt`, wait for
-     「1」or「2」, then `c2c prefs set --setup-mode auto|manual --json`.
-     Do not start ChatGPT configuration until they answer. Do not guess.
-   - `setupMode` is `manual`: skip automatic ChatGPT settings. Use guided
-     manual from the start (chosen, not a failure).
-   - `setupMode` is `auto`: automatic browser setup. Two explicit failures of
-     the same configuration step after repair then enter guided manual.
-     A browser/js timeout, a page still loading/generating, or waiting for
-     user login/2FA does NOT count as a failure. Do not change the saved
-     `setupMode` when falling back.
+   ChatGPT setup** below — and then give them ONE action. The Personal-first
+   setup below never asks the user to choose auto/manual and never lets the
+   legacy `setupMode` preference control a new workspace setup. Existing
+   `setupMode` values remain readable only for compatibility with an explicit
+   legacy reconnect/repair path.
    `developerModeEnabled: true` means skip `#settings/Security` until a
    connector create fails because developer mode is required. Then open
    that page, enable it, and `c2c prefs set --developer-mode --json`.
    These prefs are for this machine, not per workspace. Do not ask again
    on reconnect or a second repo. A new computer (empty prefs) asks/checks
    once.
-5. ALWAYS use the built-in in-app browser (iab) for every ChatGPT step.
-   Follow **In-app browser (ChatGPT)** below. NEVER Computer Use (no
-   screenshot-click). NEVER launch or control a third-party/external browser
-   (Chrome, Safari, Edge…), and never use `open <url>` to hand off to one.
+5. For legacy reconnect/repair steps that explicitly use ChatGPT pages, ALWAYS
+   use the built-in in-app browser (iab). Follow **In-app browser (ChatGPT)**
+   below. NEVER Computer Use (no screenshot-click). NEVER launch or control a
+   third-party/external browser (Chrome, Safari, Edge…), and never use `open
+   <url>` to hand off to one. The Personal-first first-time path does not open
+   ChatGPT pages or automate connector creation.
    - The ONLY exception: the user explicitly says the Cloudflare login must use
      their own browser session — that single Cloudflare login step may go through
      their browser; everything else stays in the built-in browser.
@@ -59,8 +56,10 @@ whatever data it needs by itself.
      你浏览器的正常使用。ChatGPT 只能跑在内置浏览器里。" Only if the user replies
      with an explicit "我愿意承担影响" may you proceed in their browser; otherwise
      keep ChatGPT in the built-in browser, every time they ask.
-6. Conversation reuse depends on `c2c session --json` → `conversation.mode`
-   (see Conversation management). Do not invent a second mode.
+6. After first-time Personal setup, conversation reuse depends on `c2c session
+   --json` → `conversation.mode` (see Conversation management). Do not invent a
+   second mode. The first-time Personal path does not create a ChatGPT Project,
+   chat, or session; bind one only when the user explicitly asks.
    - **long-chat** (legacy session file, or the user opted out): ONE ChatGPT
      conversation per workspace. Never silently start a new chat.
    - **project** (new workspaces, or an existing workspace that opted in):
@@ -222,10 +221,12 @@ discover a state directory. If the Personal Taskbook Skill cannot establish the
 same bound workspace/state as the local bridge, it must stop without claiming
 or retrying a task.
 
-## Connection choice (once per workspace)
+## Legacy connection choice (compatibility only; once per workspace)
 
 Ask this **before** the public address exists (`c2c setup` / first `doctor --fix`
-that starts a tunnel). Do not mention tunnels, wrangler, DNS, or hostnames.
+that starts a tunnel) only for the legacy/reconnect path. The Personal-first
+`配置` workflow below does not enter this choice when a local preferred Named
+zone is configured. Do not mention tunnels, wrangler, DNS, or hostnames.
 Speak only of 临时地址 / 固定域名 / 登录 Cloudflare.
 
 1. `c2c tunnel status -w <workspace> --json`
@@ -244,7 +245,75 @@ Speak only of 临时地址 / 固定域名 / 登录 Cloudflare.
 4. Never put connection credentials in the project. The CLI stores them in
    the C2C state directory.
 
-## Workflow: first-time setup（"使用 Codex with ChatGPT 完成首次配置"）
+## Workflow: Personal-first first-time setup（“配置”）
+
+This is the authoritative first-time path for a supported, already bound
+Personal C2C workspace. When the user says standalone `配置`, keep the local
+preparation quiet and do not route through the legacy auto/manual choice.
+
+1. Detect prerequisites yourself: `node --version` (>= 20), and check
+   `cloudflared`. If cloudflared is missing, install it through the existing
+   platform path; only interrupt for a login, CAPTCHA, 2FA, or explicit consent.
+2. Prepare this workspace locally:
+   - run `c2c prefs get --json` and read `preferredNamedZone`;
+   - if it is missing, stop with the one-time local setup instruction
+     `c2c prefs set --named-zone <your Cloudflare zone> --json`. Do not ask
+     Quick vs Named or ask for a domain inside this Personal workflow;
+   - run `c2c skill install --json` and `c2c sandbox-allow --json`;
+   - run `c2c setup -w <workspace> --json` to start or reuse the bound Bridge
+     and public connection. For an unset workspace, setup automatically provisions Named Tunnel
+     from `preferredNamedZone` and derives the
+     `c2c-<workspace>.<zone>` hostname through the existing logic. If Cloudflare
+     authentication is missing, ask only for that login; do not silently fall
+     back to a temporary address.
+   `skill install` is idempotent and `setup` may repeat it safely. Keep the
+   returned `workspaceName`, `connectorName`, and `mcpUrl`. Intentionally discard
+   the `pairingCode` returned by setup: do not show it or ask the user to save it.
+3. Give the user one compact connector-creation handoff, with exactly these
+   practical fields:
+
+   ```text
+   Name: <connectorName>
+   Description: Securely connect ChatGPT to the current Codex workspace for planning and review.
+   Server URL: <mcpUrl>
+   Authentication: OAuth
+   ```
+
+   The user creates the connector themselves. Do not open ChatGPT in the
+   in-app browser, create or delete connectors, create a Project or chat, send
+   a boot prompt, or run any post-connect smoke test on this path. Do not add
+   MCP, tunnel, port, or OAuth explanations beyond the required field value.
+4. Wait for the user to report that the connector has been created and is ready
+   to authorize. Only then run `c2c pair -w <workspace> --json` to generate a
+   fresh one-time code. Give only:
+
+   ```text
+   配对码：<pairingCode>
+   请在刚创建的连接器授权页输入配对码；完成后告诉我“好了”。
+   ```
+
+   Do not reuse the code from `c2c setup`, expose tokens, or perform the
+   authorization in the browser yourself.
+5. When the user reports Connected / authorized / pairing accepted, consider
+   setup complete from the user's report. Do not force a connectivity test,
+   read a workspace file, send a boot prompt, create a Project/chat, or open
+   ChatGPT to verify it. If the user later reports a real failure, use the
+   existing doctor/repair path on demand.
+6. At completion, give this short Project Instructions routing rule for the
+   user to paste if they use a Project; do not create or edit the Project on
+   their behalf:
+
+   ```text
+   This Project defaults to its declared C2C connector/workspace.
+   Do not proactively use other workspace connectors.
+   Cross-workspace use is allowed only when the user explicitly asks.
+   ```
+
+## Legacy first-time setup（compatibility only; not the Personal-first path）
+
+Keep the following upstream browser/session orchestration only for compatibility
+with an explicitly requested legacy flow or an existing repair path. It must not
+be selected by a new Personal `配置` request.
 
 1. Detect prerequisites yourself: `node --version` (>= 20), and check `cloudflared`.
    - If cloudflared is missing on macOS run `brew install cloudflared`; on Windows use
@@ -323,14 +392,15 @@ Ready.
 If a login wall appears (ChatGPT, Cloudflare): stop, tell the user the ONE thing
 to do ("请登录 ChatGPT，完成后告诉我'好了'"), then continue.
 
-### Guided manual ChatGPT setup
+### Legacy guided manual ChatGPT setup (reconnect/repair only)
 
-Enter this path when `setupMode` is `manual` (chosen at the start), or when
-automatic ChatGPT browser configuration fails twice at the same explicit
-setup/reconnect step after `c2c doctor` / repair. Do NOT enter the failure
-path for a browser/js timeout without a visible error, a page that is
-still loading/generating, or while waiting for login / 2FA / CAPTCHA.
-A chosen manual path does not wait for those two failures.
+This section is not part of the Personal-first first-time setup. Enter it only
+when an explicit `c2c doctor` / repair result requires an existing connector
+update, or when the user explicitly asks to repair the legacy browser path.
+Stored `setupMode` values remain readable for that compatibility path, but they
+never select a new Personal setup. Do NOT enter the failure path for a
+browser/js timeout without a visible error, a page that is still
+loading/generating, or while waiting for login / 2FA / CAPTCHA.
 
 Stop automating ChatGPT settings. Keep the current local C2C state and the
 current `mcpUrl`, `pairingCode`, `workspaceName`, and `connectorName`. Do not

@@ -24,6 +24,7 @@ import {
   readTunnelState,
   TUNNEL_CHOICE_PROMPT,
 } from "../tunnel/state.js";
+import { planPersonalNamedTunnel } from "../tunnel/personal-default.js";
 import { Logger } from "../logger/index.js";
 import { getStateDir } from "../config/paths.js";
 import { ensureSandboxAllowlist, getCodexConfigPath, isStateDirAllowlisted } from "../config/sandbox-allow.js";
@@ -229,6 +230,30 @@ async function ensureBridgeAndTunnel(
   return { runtime, info, mcpUrl };
 }
 
+async function preparePersonalNamedTunnel(workspaceRoot: string, tunnelEnabled: boolean): Promise<boolean> {
+  if (!tunnelEnabled) return false;
+  const workspace = new Workspace(workspaceRoot);
+  const plan = planPersonalNamedTunnel({
+    preferredZone: readUiPrefs().preferredNamedZone,
+    state: readTunnelState(workspace.id),
+    workspaceName: workspace.name,
+    workspaceId: workspace.id,
+  });
+  if (!plan) return false;
+
+  const result = await provisionNamedTunnel({
+    workspaceId: workspace.id,
+    workspaceName: workspace.name,
+    zone: plan.zone,
+    hostname: plan.hostname,
+    fallbackToQuick: false,
+  });
+  if (!result.ok) {
+    throw new Error(result.error ?? "Named Tunnel setup failed; no temporary fallback was selected.");
+  }
+  return true;
+}
+
 program
   .name("c2c")
   .description(`${PRODUCT_NAME} — ChatGPT thinks. Codex works.`)
@@ -329,7 +354,16 @@ program
       }
       const personalTaskbook = installPersonalTaskbookSkills();
       const sandbox = trySandboxAllow();
-      const { runtime, info, mcpUrl } = await ensureBridgeAndTunnel(root, { tunnel: opts.tunnel });
+      const autoProvisionedNamed = await preparePersonalNamedTunnel(root, opts.tunnel);
+      let connection = await ensureBridgeAndTunnel(root, { tunnel: opts.tunnel });
+      if (autoProvisionedNamed && connection.info.tunnel.provider !== "cloudflare-named") {
+        if (!(await stopBridge(root))) {
+          throw new Error("The existing Bridge could not be restarted for the configured Named Tunnel.");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        connection = await ensureBridgeAndTunnel(root, { tunnel: opts.tunnel });
+      }
+      const { runtime, info, mcpUrl } = connection;
       const connectorName = mcpUrl
         ? persistWorkspaceEndpoint({
             workspaceId: info.workspaceId,
@@ -1055,11 +1089,11 @@ session
 
 const prefsCmd = program
   .command("prefs")
-  .description("Remember ChatGPT developer mode and setup choice for this machine");
+  .description("Remember ChatGPT setup and Personal Named Tunnel preferences for this machine");
 
 prefsCmd
   .command("get", { isDefault: true })
-  .description("Show remembered ChatGPT setup choices (not per workspace)")
+  .description("Show remembered ChatGPT setup choices and Named Tunnel preference (not per workspace)")
   .option("--json", "machine-readable output", false)
   .action((opts: { json: boolean }) => {
     const prefs = readUiPrefs();
@@ -1071,26 +1105,29 @@ prefsCmd
     if (prefs.setupMode === "auto") say("配置方式：AI 自动化配置（预览版）");
     else if (prefs.setupMode === "manual") say("配置方式：手动教学配置");
     else say("配置方式：尚未选择");
+    say(prefs.preferredNamedZone ? `Personal 固定域名默认区域：${prefs.preferredNamedZone}` : "Personal 固定域名默认区域：尚未设置");
   });
 
 prefsCmd
   .command("set")
-  .description("Save a ChatGPT setup choice for this machine")
+  .description("Save a ChatGPT setup choice or Personal Named Tunnel preference for this machine")
   .option("--developer-mode", "remember that ChatGPT developer mode is on", false)
   .option("--setup-mode <mode>", "auto (preview) or manual")
+  .option("--named-zone <domain>", "default Cloudflare zone for Personal Named Tunnel setup")
   .option("--json", "machine-readable output", false)
-  .action((opts: { developerMode: boolean; setupMode?: string; json: boolean }) => {
+  .action((opts: { developerMode: boolean; setupMode?: string; namedZone?: string; json: boolean }) => {
     try {
       const modeRaw = opts.setupMode?.trim().toLowerCase();
       if (modeRaw && !SETUP_MODES.includes(modeRaw as SetupMode)) {
         throw new Error(`setup-mode must be one of ${SETUP_MODES.join(", ")}`);
       }
-      if (!opts.developerMode && !modeRaw) {
-        throw new Error("nothing to save: pass --developer-mode and/or --setup-mode");
+      if (!opts.developerMode && !modeRaw && opts.namedZone === undefined) {
+        throw new Error("nothing to save: pass --developer-mode, --setup-mode, and/or --named-zone");
       }
       const prefs = mergeUiPrefs({
         developerModeEnabled: opts.developerMode ? true : undefined,
         setupMode: modeRaw as SetupMode | undefined,
+        preferredNamedZone: opts.namedZone,
       });
       if (opts.json) {
         say(JSON.stringify({ ok: true, ...prefs }));
@@ -1099,6 +1136,7 @@ prefsCmd
       if (opts.developerMode) check("已记住开发人员模式已开启");
       if (modeRaw === "auto") check("已记住配置方式：AI 自动化配置（预览版）");
       if (modeRaw === "manual") check("已记住配置方式：手动教学配置");
+      if (opts.namedZone !== undefined) check(`已记住 Personal 固定域名默认区域：${prefs.preferredNamedZone}`);
     } catch (error) {
       handleCliError(error, opts.json);
     }

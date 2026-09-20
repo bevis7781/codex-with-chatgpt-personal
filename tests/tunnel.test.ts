@@ -310,4 +310,29 @@ describe("tunnel preference state", () => {
       expect(result.userMessage).toMatch(/临时地址/);
     });
   });
+
+  it("can fail closed without selecting Quick for Personal setup", () => {
+    stateDirs.push(isolateStateDir());
+    const account: CloudflaredAccount = {
+      hasCert: () => true,
+      login: async () => undefined,
+      listTunnels: async () => [],
+      createTunnel: async () => {
+        throw new Error("Cloudflare authorization required");
+      },
+      routeDns: async () => undefined,
+    };
+    return provisionNamedTunnel({
+      workspaceId: "ws3",
+      workspaceName: "Demo",
+      zone: "example.com",
+      fallbackToQuick: false,
+      account,
+    }).then((result) => {
+      expect(result.ok).toBe(false);
+      expect(result.fallback).toBe(false);
+      expect(result.state.preference).toBe("unset");
+      expect(readTunnelState("ws3").preference).toBe("unset");
+    });
+  });
 });
