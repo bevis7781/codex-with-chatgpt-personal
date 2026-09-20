@@ -41,9 +41,13 @@ Codex 手里。你的仓库永远不会被上传——ChatGPT 通过安全的、
 
 1. 克隆本仓库：`https://github.com/bevis7781/codex-with-chatgpt-personal.git`。
 2. 在 checkout 中执行 `corepack pnpm install` 和 `corepack pnpm build`。
-3. 使用现有 C2C setup / pairing 流程配置工作区连接器。
-4. 如果需要让 Web ChatGPT 提交 Taskbook，显式授权 `taskbook.submit`，并在支持的
-   本地 Harness 中加载仓库内的 `skill/PERSONAL-TASKBOOK.md` 来使用 `Do` / `Read`。
+3. 运行 `node bin/c2c.js skill install`，它会把 C2C Skill 和独立的
+   Personal Taskbook Skill 自动安装到本地 Codex Skill 目录；`c2c setup` 对已有安装
+   也会安全地重复这一步。
+4. 使用现有 C2C setup / pairing 流程配置工作区连接器。
+5. 如果需要让 Web ChatGPT 提交 Taskbook，显式授权 `taskbook.submit`。在已经安装并
+   明确绑定当前工作区的 Personal Taskbook 上下文中，之后的独立 `Do` / `Read` 会自动
+   使用本地 Rule；普通对话里提到这些词不会触发它。
 
 ## 一段话安装（纯小白专用）
 
@@ -59,9 +63,8 @@ Agent（Codex），然后去倒杯咖啡：
 2. 下载：把 https://github.com/bevis7781/codex-with-chatgpt-personal 克隆到
    ~/codex-with-chatgpt-personal（已存在就 git pull 更新）。
 3. 构建：在该目录里执行 corepack pnpm install 和 corepack pnpm build。
-4. 安装 Skill：把仓库里的 skill/SKILL.md 复制到
-   ~/.codex/skills/codex-with-chatgpt/SKILL.md，并把文件中
-   "The codex-with-chatgpt checkout lives at:" 那一行的路径改成实际克隆路径。
+4. 安装 Skill：运行 `node bin/c2c.js skill install --json`。它会自动安装 C2C Skill
+   和 Personal Taskbook 入口并填好本地路径，不要手动修改 `AGENTS.md` 或复制 Rule。
 5. 首次配置：按 SKILL.md 里的 first-time setup 流程执行
   （运行 c2c setup，用内置浏览器打开 ChatGPT 配置连接器并输入配对码）。
    全程只用内置浏览器，禁止打开任何第三方浏览器。
@@ -76,9 +79,11 @@ Agent（Codex），然后去倒杯咖啡：
 
 ## 安装 → 配置 → 使用（手动版）
 
-1. 安装 Codex Skill：把 `skill/` 复制到 `~/.codex/skills/codex-with-chatgpt/`。
+1. 安装 Skill：在 checkout 中运行 `node bin/c2c.js skill install`，它会同时安装 C2C
+   Skill 和明确的 Personal Taskbook 入口。
 2. 对 Codex 说：**"使用 Codex with ChatGPT 完成首次配置。"**
-3. 之后正常使用：**"使用 Codex with ChatGPT，帮我实现 XXX。"**
+3. 之后正常使用：**"使用 Codex with ChatGPT，帮我实现 XXX。"** 在已绑定的 Personal
+   Taskbook 对话中，独立 `Read` 只查看，独立 `Do` 最多执行一个符合条件的任务后停止。
 
 说明书到此结束。你不需要知道 MCP、OAuth、Tunnel、端口、localhost 是什么——
 Codex 会自动完成所有配置，你只会看到：
@@ -87,6 +92,7 @@ Codex 会自动完成所有配置，你只会看到：
 Codex with ChatGPT
 
 ✓ 当前项目已识别
+✓ Personal Taskbook 已就绪
 ✓ Workspace Bridge 已启动
 ✓ 安全连接已建立
 ✓ ChatGPT 已连接
@@ -164,6 +170,7 @@ pnpm build          # 产出 dist/，暴露 c2c 命令
 pnpm test           # vitest 测试套件（路径安全、OAuth、配对、MCP 端到端）
 
 c2c setup           # 一条命令：Bridge + 隧道 + 配对码
+c2c skill install   # 安装/更新 C2C 与 Personal Taskbook Skill
 c2c sandbox-allow   # 把本地设置目录加入 Codex 沙箱白名单（macOS / Windows）
 c2c status / doctor / pair / unpair / logs / stop
 ```

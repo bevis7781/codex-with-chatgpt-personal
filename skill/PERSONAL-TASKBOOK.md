@@ -1,21 +1,36 @@
+---
+name: codex-with-chatgpt-personal-taskbook
+description: >
+  Use when the user sends an exact standalone Do or Read after normal C2C
+  setup has installed this skill for the current local workspace and the
+  conversation is operating as its Personal Taskbook Harness. Before any
+  claim, verify the current workspace binding. Do not use this skill for
+  ordinary mentions of those words, unrelated conversations, or unbound workspaces.
+---
+
+<!-- Managed source for the Codex with ChatGPT Personal Taskbook skill. -->
+
 # Personal Taskbook Harness Rule
 
 This rule applies only when the current conversation is explicitly operating as
 the Personal Taskbook Harness for the currently bound local workspace. It does
 not change the normal Codex workflow, setup commands, or any unrelated use of
-the words `Do` and `Read`.
+the words `Do` and `Read`. The normal C2C setup installs this file as a
+dedicated skill; its presence alone is not authorization.
 
 ## Enable this rule locally
 
-The Harness must explicitly load this repository-local file before handling a
-Personal Taskbook `Do` or `Read`. Merely having the file in `skill/` does not
-enable it, and the CLI does not auto-enable it. Use the checkout's local tools;
-do not install `c2c` globally:
+The Harness must explicitly load this installed file before handling a Personal
+Taskbook `Do` or `Read`. Merely seeing the words in an unrelated conversation
+does not enable it. The standard setup fills the two placeholders below with
+the trusted checkout and bridge state directory; do not ask the user to fill
+them in or discover them manually. Use the checkout's local tools; do not
+install `c2c` globally:
 
 ```powershell
-$repo = (Resolve-Path .).Path
-$workspace = "<the already-bound project root>"
-$env:C2C_STATE_DIR = "<the same C2C state directory used by the bridge>"
+$repo = "<ACTUAL_CHECKOUT_PATH>"
+$workspace = (Resolve-Path .).Path
+$env:C2C_STATE_DIR = "<C2C_STATE_DIR>"
 Get-Content (Join-Path $repo "skill\PERSONAL-TASKBOOK.md") -Raw
 node (Join-Path $repo "bin\c2c.js") taskbook inspect --workspace $workspace --json
 ```

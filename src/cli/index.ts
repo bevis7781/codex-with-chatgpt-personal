@@ -65,6 +65,7 @@ import {
   type TaskbookExecutionEvidence,
   type TaskbookTerminalStatus,
 } from "../taskbook/index.js";
+import { installPersonalTaskbookSkills } from "../skill/personal-taskbook.js";
 
 const program = new Command();
 
@@ -291,6 +292,26 @@ program
 
 // ---------------------------------------------------------------- setup
 
+const skillCmd = program.command("skill").description("Install the Codex Skill and Personal Taskbook entry point");
+
+skillCmd
+  .command("install", { isDefault: true })
+  .description("Install or update the local C2C and Personal Taskbook Skills")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { json: boolean }) => {
+    try {
+      const installed = installPersonalTaskbookSkills();
+      const payload = { ok: true, changed: installed.changed, personalTaskbookSkill: true };
+      if (opts.json) {
+        say(JSON.stringify(payload));
+        return;
+      }
+      check(installed.changed ? "已安装或更新 C2C 与 Personal Taskbook Skill" : "C2C 与 Personal Taskbook Skill 已是最新");
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
 program
   .command("setup")
   .description("First-time setup: bridge + secure connection + pairing code")
@@ -306,6 +327,7 @@ program
         say("正在连接 ChatGPT…");
         say("");
       }
+      const personalTaskbook = installPersonalTaskbookSkills();
       const sandbox = trySandboxAllow();
       const { runtime, info, mcpUrl } = await ensureBridgeAndTunnel(root, { tunnel: opts.tunnel });
       const connectorName = mcpUrl
@@ -336,6 +358,10 @@ program
             pairingCode: pairingResult.code,
             pairingExpiresAt: pairingResult.expiresAt,
             sandbox,
+            personalTaskbook: {
+              ok: personalTaskbook.ok,
+              changed: personalTaskbook.changed,
+            },
             tunnel: {
               mode: isNamedTunnelReady(tunnelState) ? "named" : "quick",
               hostname: tunnelState.hostname ?? null,
@@ -346,6 +372,7 @@ program
         return;
       }
       check(`当前项目已识别（${info.workspaceName}）`);
+      check(personalTaskbook.changed ? "Personal Taskbook Skill 已安装或更新" : "Personal Taskbook Skill 已就绪");
       check("Workspace Bridge 已启动");
       if (mcpUrl) check("安全连接已建立");
       say("");
@@ -444,6 +471,18 @@ program
     // Node
     const nodeMajor = parseInt(process.versions.node.split(".")[0], 10);
     report.node = { ok: nodeMajor >= 20, detail: `v${process.versions.node}` };
+
+    // Keep the local Personal Taskbook entry point available during the
+    // normal repair/update path. This never grants taskbook.submit.
+    if (opts.fix) {
+      try {
+        const personalTaskbook = installPersonalTaskbookSkills();
+        report.personalTaskbook = { ok: true, detail: personalTaskbook.changed ? "已安装或更新" : "已就绪" };
+        if (personalTaskbook.changed) results.push("已安装或更新 Personal Taskbook Skill");
+      } catch (error) {
+        report.personalTaskbook = { ok: false, detail: (error as Error).message };
+      }
+    }
 
     // Codex sandbox writable_roots (so later chats do not need elevation)
     if (opts.fix) {

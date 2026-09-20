@@ -63,11 +63,15 @@ read scopes, and never auto-executes.
 
 1. Clone this repository: `https://github.com/bevis7781/codex-with-chatgpt-personal.git`.
 2. In the checkout, run `corepack pnpm install` and `corepack pnpm build`.
-3. Configure the workspace connector through the existing C2C setup and
+3. Run `node bin/c2c.js skill install`; it installs the C2C Skill and the
+   dedicated Personal Taskbook Skill into the local Codex Skill directory.
+   `c2c setup` repeats this step safely for existing installations.
+4. Configure the workspace connector through the existing C2C setup and
    pairing flow.
-4. If Web ChatGPT should submit Taskbooks, explicitly authorize
-   `taskbook.submit` and load the repository-local
-   `skill/PERSONAL-TASKBOOK.md` in a supported local Harness for `Do` / `Read`.
+5. If Web ChatGPT should submit Taskbooks, explicitly authorize
+   `taskbook.submit`. In the installed, explicitly bound Personal Taskbook
+   context, standalone `Do` / `Read` then use the local Rule automatically;
+   ordinary mentions in unrelated conversations do not activate it.
 
 ## One-paste install · 一段话安装
 
@@ -83,9 +87,9 @@ read scopes, and never auto-executes.
 2. 下载：把 https://github.com/bevis7781/codex-with-chatgpt-personal 克隆到
    ~/codex-with-chatgpt-personal（已存在就 git pull 更新）。
 3. 构建：在该目录里执行 corepack pnpm install 和 corepack pnpm build。
-4. 安装 Skill：把仓库里的 skill/SKILL.md 复制到
-   ~/.codex/skills/codex-with-chatgpt/SKILL.md，并把文件中
-   "The codex-with-chatgpt checkout lives at:" 那一行的路径改成实际克隆路径。
+4. 安装 Skill：运行 `node bin/c2c.js skill install --json`。它会自动安装
+   C2C Skill 和 Personal Taskbook 入口并填好本地路径，不要手动修改
+   `AGENTS.md` 或复制 Rule 文件。
 5. 首次配置：按 SKILL.md 里的 first-time setup 流程执行
   （运行 c2c setup，用内置浏览器打开 ChatGPT 配置连接器并输入配对码）。
    全程只用内置浏览器，禁止打开任何第三方浏览器。
@@ -109,9 +113,9 @@ I am a non-technical user — do everything yourself:
 2. Download: clone https://github.com/bevis7781/codex-with-chatgpt-personal into
    ~/codex-with-chatgpt-personal (if it already exists, git pull to update).
 3. Build: inside that folder run `corepack pnpm install` then `corepack pnpm build`.
-4. Install the Skill: copy skill/SKILL.md to
-   ~/.codex/skills/codex-with-chatgpt/SKILL.md, and update the line
-   "The codex-with-chatgpt checkout lives at:" to the actual clone path.
+4. Install the Skills: run `node bin/c2c.js skill install --json`. This
+   installs both the C2C Skill and the Personal Taskbook entry point and fills
+   local paths automatically; do not edit `AGENTS.md` or copy the Rule by hand.
 5. First-time setup: follow the SKILL.md "first-time setup" workflow
    (run c2c setup, configure the ChatGPT connector in the BUILT-IN browser,
    enter the pairing code). Never open a third-party browser.
@@ -135,9 +139,12 @@ anytime. / Skill 每天自动检查一次 GitHub，有新版本会自动更新�
 
 ## Install → Setup → Use (manual)
 
-1. Install the Codex Skill: copy `skill/` to `~/.codex/skills/codex-with-chatgpt/`.
+1. Install the Skills: from the checkout run `node bin/c2c.js skill install`.
+   This installs the C2C Skill and the explicit Personal Taskbook entry point.
 2. Tell Codex: **"Set up Codex with ChatGPT."** (中文: "使用 Codex with ChatGPT 完成首次配置。")
-3. Use Codex normally: **"Use Codex with ChatGPT to implement XXX."**
+3. Use Codex normally: **"Use Codex with ChatGPT to implement XXX."** For a
+   bound Personal Taskbook conversation, standalone `Read` is view-only and
+   standalone `Do` runs at most one eligible task before stopping.
 
 That's the whole manual. You don't need to know what MCP, OAuth, tunnels,
 ports or localhost are — Codex configures everything automatically and you
@@ -147,6 +154,7 @@ just see:
 Codex with ChatGPT
 
 ✓ Project detected
+✓ Personal Taskbook ready
 ✓ Workspace Bridge started
 ✓ Secure connection established
 ✓ ChatGPT connected
@@ -246,6 +254,7 @@ pnpm build          # -> dist/, exposes the `c2c` bin
 pnpm test           # vitest suite (path security, OAuth, pairing, MCP e2e)
 
 c2c setup           # bridge + tunnel + pairing code, all in one
+c2c skill install   # install/update the C2C and Personal Taskbook Skills
 c2c sandbox-allow   # whitelist the settings dir in Codex (macOS + Windows)
 c2c status / doctor / pair / unpair / logs / stop
 ```

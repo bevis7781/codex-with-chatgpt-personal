@@ -43,16 +43,19 @@ allowed output record with exit code `0`, and matching output metadata for the
 same task and iteration; a failed or blocked result may omit output only with a
 recorded reason.
 
-The portable Rule is enabled only when the Harness explicitly loads
-`skill/PERSONAL-TASKBOOK.md` for the current bound workspace. It is not a
-global installation and is not enabled merely by placing the file in the
-repository. From this checkout, use the local CLI with the same state root as
-the bridge and pass the same `--workspace` on every step:
+The normal C2C setup installs the portable Rule as the dedicated
+`codex-with-chatgpt-personal-taskbook` Skill and fills its trusted checkout and
+state paths. It is enabled only when the Harness explicitly operates in that
+Personal Taskbook context for the current bound workspace; it is not triggered
+by ordinary mentions of `Do` or `Read`. Re-running `c2c skill install` is safe
+for updates. From this checkout, the local CLI uses the same state root as the
+bridge and every lifecycle step passes the same `--workspace`:
 
 ```powershell
 $repo = (Resolve-Path .).Path
 $workspace = "<the already-bound project root>"
 $env:C2C_STATE_DIR = "<the same C2C state directory used by the bridge>"
+node (Join-Path $repo "bin\c2c.js") skill install --json
 Get-Content (Join-Path $repo "skill\PERSONAL-TASKBOOK.md") -Raw
 
 node (Join-Path $repo "bin\c2c.js") taskbook claim `

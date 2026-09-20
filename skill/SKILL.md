@@ -166,7 +166,8 @@ that close the tab, hide the window, or stall on the settings page.
 ## Locations
 
 - The codex-with-chatgpt checkout lives at: `<ACTUAL_CHECKOUT_PATH>`
-  (installer/update MUST replace this line in the installed Skill with the user's actual checkout path.)
+  (the `c2c skill install` command replaces this placeholder in the installed
+  copy; users do not need to edit it.)
 - CLI: let `<checkout>` mean the path on the previous line; run
   `node "<checkout>/bin/c2c.js" <command>` (or `c2c <command>` if globally linked).
   All commands support `--json` for parsing.
@@ -197,14 +198,29 @@ Inside the checkout directory (see Locations):
 
 1. `git pull --ff-only` (if it fails due to local edits: `git stash && git pull --ff-only`).
 2. `corepack pnpm install && corepack pnpm build`.
-3. Re-install the Skill: copy `skill/SKILL.md` to
-   `~/.codex/skills/codex-with-chatgpt/SKILL.md`, then fix the "checkout lives at:"
-   line in the copy to the actual checkout path.
+3. Run `node "<checkout>/bin/c2c.js" skill install --json`. This idempotently
+   installs/updates both the C2C Skill and the dedicated Personal Taskbook Skill,
+   and fills the trusted checkout/state paths in their installed copies.
 4. `c2c sandbox-allow --json` (so existing installs pick up the sandbox allowlist),
    then `c2c restart -w <workspace>` so the bridge runs the new code, then
    `c2c update-check --force --json` to refresh the cache (should now report up to date).
 5. Tell the user "✓ 已更新到最新版本" — then resume whatever task triggered this.
    (The updated SKILL.md takes effect from the next Codex session; that's expected.)
+
+## Personal Taskbook Harness (explicit context only)
+
+`c2c skill install` installs `codex-with-chatgpt-personal-taskbook` alongside
+this Skill. After normal setup, an exact standalone `Read` or `Do` in the
+currently bound workspace is handled only as its Personal Taskbook Harness
+context. In that context, `Read` is optional and view-only; `Do` authorizes at
+most one eligible local task. Ordinary mentions of `Do` or `Read` in other
+conversations do not activate this path, and task submission never grants or
+triggers local execution.
+
+Do not ask the user to copy `skill/PERSONAL-TASKBOOK.md`, edit `AGENTS.md`, or
+discover a state directory. If the Personal Taskbook Skill cannot establish the
+same bound workspace/state as the local bridge, it must stop without claiming
+or retrying a task.
 
 ## Connection choice (once per workspace)
 
@@ -234,8 +250,11 @@ Speak only of 临时地址 / 固定域名 / 登录 Cloudflare.
    - If cloudflared is missing on macOS run `brew install cloudflared`; on Windows use
      `winget install Cloudflare.cloudflared`. Do this yourself; don't ask.
 2. If the c2c repo has no `node_modules`, run `pnpm install && pnpm build` in it.
-3. Run `c2c sandbox-allow --json`, then **Connection choice**, then
+3. Run `c2c skill install --json`, then `c2c sandbox-allow --json`, then
+   **Connection choice**, then
    `c2c setup -w <workspace> --json`.
+   `skill install` is idempotent and is also run by `c2c setup`; it installs the
+   C2C Skill, the adjacent Rule, and the explicit Personal Taskbook Skill.
    `sandbox-allow` edits Codex `config.toml` only — it adds C2C's state directory
    to `[sandbox_workspace_write].writable_roots` so later chats can write logs
    without elevation. If the write is denied, request approval and retry once.
@@ -292,6 +311,7 @@ Speak only of 临时地址 / 固定域名 / 登录 Cloudflare.
 Codex with ChatGPT
 
 ✓ 当前项目已识别
+✓ Personal Taskbook 已就绪
 ✓ Workspace Bridge 已启动
 ✓ 安全连接已建立
 ✓ ChatGPT 已连接
