@@ -54,8 +54,17 @@ import {
   type ProtocolState,
   type WaitingFor,
 } from "../session/state.js";
-import { appendExecutionRecord } from "../execution/records.js";
-import { saveExecutionOutput } from "../execution/output.js";
+import { appendExecutionRecord, readExecutionRecords } from "../execution/records.js";
+import { listExecutionOutputs, readExecutionOutput, saveExecutionOutput } from "../execution/output.js";
+import {
+  claimTaskbook,
+  decodeTaskbookEvidenceNote,
+  encodeTaskbookEvidenceNote,
+  finishTaskbook,
+  inspectTaskbooks,
+  type TaskbookExecutionEvidence,
+  type TaskbookTerminalStatus,
+} from "../taskbook/index.js";
 
 const program = new Command();
 
@@ -95,6 +104,14 @@ function parseChangedFiles(value: string): string[] | number {
     return count;
   }
   return value.split(",").map((file) => file.trim()).filter(Boolean);
+}
+
+function parseOutputId(value: string): number | null {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "null" || normalized === "none") return null;
+  const parsed = parseNonNegativeInteger(value);
+  if (parsed <= 0) throw new InvalidArgumentError("output id must be a positive integer or null");
+  return parsed;
 }
 
 /** Local harness output only. Never pasted into ChatGPT. */
@@ -1048,6 +1065,226 @@ prefsCmd
     }
   });
 
+// ---------------------------------------------------------------- taskbook (local Harness lifecycle only)
+
+const taskbookCmd = program
+  .command("taskbook")
+  .description("Inspect and advance one local Taskbook claim; never executes Taskbook text");
+
+taskbookCmd
+  .command("inspect", { isDefault: true })
+  .description("Read pending and terminal Taskbook state for this workspace")
+  .option("-w, --workspace <path>")
+  .option("--task <id>", "show one exact task without reserving it")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { workspace?: string; task?: string; json: boolean }) => {
+    try {
+      const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      const result = inspectTaskbooks({
+        workspaceId: workspace.id,
+        projectRoot: workspace.root,
+        taskId: opts.task,
+      });
+      if (opts.json) {
+        say(JSON.stringify({ ok: true, ...result }));
+        return;
+      }
+      if (result.unfinished.length > 0) {
+        say(`有未完成的已领取任务：${result.unfinished.map((item) => item.taskId).join(", ")}`);
+      }
+      if (result.pending.length === 0) {
+        say("当前没有待领取的 Taskbook。");
+        return;
+      }
+      const next = result.pending[0];
+      say(`下一项：${next.taskId}（${next.title}）`);
+      say(`bodySha256：${next.bodySha256}`);
+      say(next.body);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+taskbookCmd
+  .command("claim")
+  .description("Atomically claim exactly one pending Taskbook for a previously received Do")
+  .requiredOption("--task <id>")
+  .requiredOption("--body-sha256 <hash>")
+  .requiredOption("--authorization-id <id>", "local ID retained for this one Do event")
+  .option("--authorized-at <timestamp>", "canonical UTC time captured before claim")
+  .option("--harness <label>", "local Harness label", "c2c-local-harness")
+  .option("-w, --workspace <path>")
+  .option("--json", "machine-readable output", false)
+  .action(
+    (opts: {
+      workspace?: string;
+      task: string;
+      bodySha256: string;
+      authorizationId: string;
+      authorizedAt?: string;
+      harness: string;
+      json: boolean;
+    }) => {
+      try {
+        const workspace = new Workspace(resolveWorkspace(opts.workspace));
+        const claimed = claimTaskbook({
+          workspaceId: workspace.id,
+          projectRoot: workspace.root,
+          taskId: opts.task,
+          bodySha256: opts.bodySha256,
+          authorizationId: opts.authorizationId,
+          authorizedAt: opts.authorizedAt,
+          harness: opts.harness,
+        });
+        const payload = { ok: true, ...claimed };
+        if (opts.json) say(JSON.stringify(payload));
+        else {
+          check(`已领取 ${claimed.taskId}`);
+          say(`authorizationId：${claimed.claim.authorizationId}`);
+          say(`claimId：${claimed.claim.claimId}`);
+          say(claimed.body);
+        }
+      } catch (error) {
+        handleCliError(error, opts.json);
+      }
+    }
+  );
+
+function readTaskbookEvidence(
+  workspaceId: string,
+  taskId: string,
+  bodySha256: string,
+  claimId: string,
+  authorizationId: string,
+  executionTimestamp: string,
+  status: TaskbookTerminalStatus,
+  outputId: number | null
+): TaskbookExecutionEvidence {
+  const record = readExecutionRecords(workspaceId, 100).find(
+    (candidate) =>
+      candidate.taskId === taskId &&
+      candidate.iteration === 1 &&
+      candidate.timestamp === executionTimestamp &&
+      (outputId === null ? candidate.outputId === undefined : candidate.outputId === outputId)
+  );
+  if (!record) throw new Error("No read-back execution record matches the task and timestamp.");
+  const note = decodeTaskbookEvidenceNote(record.notes);
+  if (
+    !note ||
+    note.bodySha256 !== bodySha256 ||
+    note.claimId !== claimId ||
+    note.authorizationId !== authorizationId
+  ) {
+    throw new Error("Execution record linkage does not match the Taskbook claim.");
+  }
+
+  const listed = listExecutionOutputs(workspaceId, 50).find((item) => item.id === outputId);
+  const output = outputId === null ? null : readExecutionOutput(workspaceId, outputId);
+  if (outputId === null && record.outputId !== undefined) {
+    throw new Error("The execution record contains output; finish must name its outputId.");
+  }
+  if (outputId !== null && (!listed || listed.taskId !== taskId || listed.iteration !== 1)) {
+    throw new Error("Execution output metadata does not match the Taskbook task and iteration.");
+  }
+  if (
+    outputId !== null &&
+    (output?.ok !== true || output.meta.taskId !== taskId || output.meta.iteration !== 1)
+  ) {
+    throw new Error("Execution output metadata does not match the Taskbook task and iteration.");
+  }
+  if (status === "succeeded" && record.exitStatus !== "ok") {
+    throw new Error("A succeeded Taskbook requires an execution record with exitStatus ok.");
+  }
+  const outputRecorded = outputId !== null && listed !== undefined;
+  const outputAvailable = output?.ok === true;
+  const exitCode = listed?.exitCode ?? null;
+  if (outputId !== null && (!outputRecorded || output?.ok === false)) {
+    throw new Error("Execution output was not read back for the requested outputId.");
+  }
+  const reason =
+    outputId === null
+      ? record.notes
+          ?.split(" | ")
+          .map((part) => part.trim())
+          .filter((part) => part.length > 0 && !part.startsWith("taskbook-evidence-v1:"))
+          .join(" | ") || undefined
+      : undefined;
+  return {
+    taskId,
+    bodySha256,
+    claimId,
+    authorizationId,
+    iteration: 1,
+    executionTimestamp,
+    outputId,
+    recorded: true,
+    outputRecorded,
+    outputAvailable,
+    exitCode,
+    reason,
+  };
+}
+
+taskbookCmd
+  .command("finish")
+  .description("Write one terminal result after read-back execution evidence")
+  .requiredOption("--task <id>")
+  .requiredOption("--claim-id <id>")
+  .requiredOption("--authorization-id <id>")
+  .requiredOption("--body-sha256 <hash>")
+  .requiredOption("--status <status>", "succeeded, failed, or blocked")
+  .requiredOption("--execution-timestamp <timestamp>")
+  .option("--output-id <id>", "positive output ID, or null when no output was recorded")
+  .option("-w, --workspace <path>")
+  .option("--json", "machine-readable output", false)
+  .action(
+    (opts: {
+      workspace?: string;
+      task: string;
+      claimId: string;
+      authorizationId: string;
+      bodySha256: string;
+      status: string;
+      executionTimestamp: string;
+      outputId?: string;
+      json: boolean;
+    }) => {
+      try {
+        if (opts.status !== "succeeded" && opts.status !== "failed" && opts.status !== "blocked") {
+          throw new Error("status must be succeeded, failed, or blocked");
+        }
+        const outputId = opts.outputId === undefined ? null : parseOutputId(opts.outputId);
+        const workspace = new Workspace(resolveWorkspace(opts.workspace));
+        const evidence = readTaskbookEvidence(
+          workspace.id,
+          opts.task,
+          opts.bodySha256,
+          opts.claimId,
+          opts.authorizationId,
+          opts.executionTimestamp,
+          opts.status as TaskbookTerminalStatus,
+          outputId
+        );
+        const result = finishTaskbook({
+          workspaceId: workspace.id,
+          projectRoot: workspace.root,
+          taskId: opts.task,
+          claimId: opts.claimId,
+          authorizationId: opts.authorizationId,
+          bodySha256: opts.bodySha256,
+          status: opts.status as TaskbookTerminalStatus,
+          executionTimestamp: opts.executionTimestamp,
+          outputId,
+          evidence,
+        });
+        if (opts.json) say(JSON.stringify({ ok: true, result }));
+        else check(`已记录 ${result.status}：${result.taskId}`);
+      } catch (error) {
+        handleCliError(error, opts.json);
+      }
+    }
+  );
+
 program
   .command("record", { hidden: true })
   .description("Record a Codex execution summary (used by the Skill)")
@@ -1058,6 +1295,9 @@ program
   .option("--tests <summary>", "e.g. '27 passed'")
   .option("--exit-status <status>", "ok | failed | blocked", "ok")
   .option("--notes <text>")
+  .option("--taskbook-body-sha256 <hash>", "Taskbook body hash for evidence linkage")
+  .option("--taskbook-claim-id <id>", "Taskbook claim ID for evidence linkage")
+  .option("--taskbook-authorization-id <id>", "Do authorization ID for evidence linkage")
   .option("--command <text>", "command whose output may be offered to ChatGPT")
   .option("--output <text>", "command output (prefer --output-file for long logs)")
   .option("--output-file <path>", "read command output from a local file")
@@ -1071,6 +1311,9 @@ program
       tests?: string;
       exitStatus: string;
       notes?: string;
+      taskbookBodySha256?: string;
+      taskbookClaimId?: string;
+      taskbookAuthorizationId?: string;
       command?: string;
       output?: string;
       outputFile?: string;
@@ -1078,6 +1321,24 @@ program
     }) => {
       const workspace = new Workspace(resolveWorkspace(opts.workspace));
       const changed = parseChangedFiles(opts.changedFiles);
+      const linkageProvided = [opts.taskbookBodySha256, opts.taskbookClaimId, opts.taskbookAuthorizationId].some(
+        (value) => value !== undefined
+      );
+      const linkageComplete =
+        opts.taskbookBodySha256 !== undefined &&
+        opts.taskbookClaimId !== undefined &&
+        opts.taskbookAuthorizationId !== undefined;
+      if (linkageProvided && !linkageComplete) {
+        throw new Error("Taskbook evidence linkage requires body hash, claim ID, and authorization ID together.");
+      }
+      const evidenceNote = linkageComplete
+        ? encodeTaskbookEvidenceNote({
+            bodySha256: opts.taskbookBodySha256!,
+            claimId: opts.taskbookClaimId!,
+            authorizationId: opts.taskbookAuthorizationId!,
+          })
+        : undefined;
+      const recordNotes = [evidenceNote, opts.notes].filter((value): value is string => Boolean(value)).join(" | ").slice(0, 400);
       let outputId: number | undefined;
       let outputAvailable = false;
       const rawOutput =
@@ -1102,7 +1363,7 @@ program
         tests: opts.tests ?? null,
         exitStatus: opts.exitStatus,
         timestamp: new Date().toISOString(),
-        notes: opts.notes?.slice(0, 400),
+        notes: recordNotes || undefined,
         outputId,
         outputAvailable,
       });

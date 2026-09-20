@@ -76,10 +76,10 @@ afterAll(async () => {
 });
 
 describe("MCP tools over Streamable HTTP", () => {
-  it("lists all nine read-only tools", async () => {
+  it("lists the nine read-only tools plus exactly one Taskbook mutation tool", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
-    expect(names).toEqual([
+    const readOnlyTools = [
       "execution_output",
       "execution_summary",
       "git_diff",
@@ -89,9 +89,31 @@ describe("MCP tools over Streamable HTTP", () => {
       "search_workspace",
       "test_status",
       "workspace_info",
-    ]);
-    // no write tools in V1
-    for (const forbidden of ["write_file", "delete_file", "execute_shell", "git_commit", "install_package"]) {
+    ];
+    expect(names).toEqual([...readOnlyTools, "submit_taskbook"].sort());
+    expect(names.length).toBe(10);
+
+    // The original nine read-only tools are unchanged and still present.
+    for (const readTool of readOnlyTools) expect(names).toContain(readTool);
+
+    // Exactly one mutation tool, and it is not annotated read-only.
+    const mutation = tools.filter((tool) => tool.name === "submit_taskbook");
+    expect(mutation).toHaveLength(1);
+    expect(mutation[0]?.annotations?.readOnlyHint).toBe(false);
+
+    // No generic write/delete/shell surface and no Taskbook read/claim surface.
+    for (const forbidden of [
+      "write_file",
+      "delete_file",
+      "execute_shell",
+      "git_commit",
+      "install_package",
+      "read_taskbook",
+      "list_taskbooks",
+      "get_taskbook",
+      "delete_taskbook",
+      "claim_taskbook",
+    ]) {
       expect(names).not.toContain(forbidden);
     }
 

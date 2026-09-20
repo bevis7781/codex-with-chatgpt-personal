@@ -3,13 +3,20 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
 
-export const SUPPORTED_SCOPES = [
+/** Scopes granted when the client omits `scope` (legacy-compatible defaults). */
+export const DEFAULT_SCOPES = [
   "workspace.read",
   "workspace.search",
   "git.read",
   "execution.read",
   "offline_access",
 ] as const;
+
+/**
+ * Every scope the authorization server can grant, whether or not it is a default.
+ * `taskbook.submit` is a supported, explicit, non-default capability.
+ */
+export const SUPPORTED_SCOPES = [...DEFAULT_SCOPES, "taskbook.submit"] as const;
 
 export type Scope = (typeof SUPPORTED_SCOPES)[number];
 
@@ -270,9 +277,17 @@ export class AuthStore {
   }
 }
 
+/**
+ * Resolve the effective scope set for an authorization request.
+ *
+ * - Omitted or blank scope keeps legacy behavior and grants exactly {@link DEFAULT_SCOPES}.
+ * - An explicit request grants only the requested scopes that are supported; unknown
+ *   values are dropped and defaults are never appended.
+ * - A request containing only unsupported values fails closed with an empty set
+ *   (the authorization endpoint rejects it with `invalid_scope`).
+ */
 export function filterScopes(requested: string | undefined): string[] {
-  if (!requested || requested.trim() === "") return [...SUPPORTED_SCOPES];
+  if (requested === undefined || requested.trim() === "") return [...DEFAULT_SCOPES];
   const asked = requested.split(/[\s+]+/).filter(Boolean);
-  const granted = asked.filter((scope) => (SUPPORTED_SCOPES as readonly string[]).includes(scope));
-  return granted.length > 0 ? granted : [...SUPPORTED_SCOPES];
+  return asked.filter((scope) => (SUPPORTED_SCOPES as readonly string[]).includes(scope));
 }

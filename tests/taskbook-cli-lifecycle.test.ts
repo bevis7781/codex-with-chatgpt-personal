@@ -1,0 +1,358 @@
+import fs from "node:fs";
+import path from "node:path";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { afterAll, describe, expect, it } from "vitest";
+import { appendExecutionRecord } from "../src/execution/records.js";
+import { encodeTaskbookEvidenceNote, submitTaskbook } from "../src/taskbook/index.js";
+import { saveExecutionOutput } from "../src/execution/output.js";
+import { Workspace } from "../src/workspace/manager.js";
+import { cleanupExternalTempDirs, externalTempDir, projectWorkspaceFixture } from "./taskbook-helpers.js";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const cliEntry = path.join(repoRoot, "src", "cli", "index.ts");
+const TASK_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const TASK_ID_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const AUTH_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+interface Fixture {
+  stateDir: string;
+  projectRoot: string;
+  workspace: Workspace;
+}
+
+function fixture(prefix: string): Fixture {
+  const stateDir = externalTempDir(prefix);
+  const projectRoot = projectWorkspaceFixture();
+  const workspace = new Workspace(projectRoot);
+  return { stateDir, projectRoot, workspace };
+}
+
+function runCli(stateDir: string, args: string[]): SpawnSyncReturns<string> {
+  return spawnSync(process.execPath, ["--import", "tsx/esm", cliEntry, ...args], {
+    cwd: repoRoot,
+    env: { ...process.env, C2C_STATE_DIR: stateDir },
+    encoding: "utf8",
+    windowsHide: true,
+  });
+}
+
+function submit(f: Fixture, taskId = TASK_ID) {
+  return submitTaskbook(
+    { title: "CLI lifecycle", body: `body-${taskId}` },
+    {
+      stateDir: f.stateDir,
+      projectRoot: f.projectRoot,
+      workspaceId: f.workspace.id,
+      nextTaskId: () => taskId,
+    }
+  );
+}
+
+function readExecutionRecords(f: Fixture): Array<Record<string, unknown>> {
+  const file = path.join(f.stateDir, "executions", `${f.workspace.id}.jsonl`);
+  if (!fs.existsSync(file)) return [];
+  return fs
+    .readFileSync(file, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+function readOutputIndex(f: Fixture): { items: Array<Record<string, unknown>> } {
+  const file = path.join(f.stateDir, "execution-outputs", f.workspace.id, "index.json");
+  return JSON.parse(fs.readFileSync(file, "utf8")) as { items: Array<Record<string, unknown>> };
+}
+
+describe("Taskbook CLI lifecycle against real execution stores", () => {
+  it("claims, records, reads back, and finishes through separate CLI processes", () => {
+    const f = fixture("c2c-g2-cli-positive");
+    const receipt = submit(f);
+    const claim = runCli(f.stateDir, [
+      "taskbook",
+      "claim",
+      "--workspace",
+      f.projectRoot,
+      "--task",
+      receipt.taskId,
+      "--body-sha256",
+      receipt.bodySha256,
+      "--authorization-id",
+      AUTH_ID,
+      "--harness",
+      "real-cli-test",
+      "--json",
+    ]);
+    expect(claim.status).toBe(0);
+    const claimed = JSON.parse(claim.stdout) as { claim: { claimId: string } };
+    const claimId = claimed.claim.claimId;
+
+    const captured = path.join(f.stateDir, "captured-test-output.txt");
+    fs.writeFileSync(captured, "real CLI output\n");
+    const record = runCli(f.stateDir, [
+      "record",
+      "--workspace",
+      f.projectRoot,
+      "--task",
+      receipt.taskId,
+      "--iteration",
+      "1",
+      "--changed-files",
+      "src/example.ts",
+      "--tests",
+      "real CLI fixture passed",
+      "--exit-status",
+      "ok",
+      "--taskbook-body-sha256",
+      receipt.bodySha256,
+      "--taskbook-claim-id",
+      claimId,
+      "--taskbook-authorization-id",
+      AUTH_ID,
+      "--command",
+      "pnpm test",
+      "--output-file",
+      captured,
+      "--exit-code",
+      "0",
+    ]);
+    expect(record.status).toBe(0);
+
+    const records = readExecutionRecords(f);
+    expect(records).toHaveLength(1);
+    const execution = records[0];
+    const outputId = execution.outputId as number;
+    expect(execution.taskId).toBe(receipt.taskId);
+    expect(execution.iteration).toBe(1);
+    expect(execution.exitStatus).toBe("ok");
+    expect(typeof execution.timestamp).toBe("string");
+    expect(outputId).toBeGreaterThan(0);
+    expect(readOutputIndex(f).items).toEqual([
+      expect.objectContaining({ id: outputId, taskId: receipt.taskId, iteration: 1, exitCode: 0, allowed: true }),
+    ]);
+
+    const finish = runCli(f.stateDir, [
+      "taskbook",
+      "finish",
+      "--workspace",
+      f.projectRoot,
+      "--task",
+      receipt.taskId,
+      "--claim-id",
+      claimId,
+      "--authorization-id",
+      AUTH_ID,
+      "--body-sha256",
+      receipt.bodySha256,
+      "--status",
+      "succeeded",
+      "--execution-timestamp",
+      String(execution.timestamp),
+      "--output-id",
+      String(outputId),
+      "--json",
+    ]);
+    expect(finish.status).toBe(0);
+    expect(JSON.parse(finish.stdout)).toMatchObject({ ok: true, result: { status: "succeeded", taskId: receipt.taskId } });
+  });
+
+  it("rejects a CLI succeeded finish when the real execution record failed", () => {
+    const f = fixture("c2c-g2-cli-failed-record");
+    const receipt = submit(f);
+    const claim = runCli(f.stateDir, [
+      "taskbook",
+      "claim",
+      "--workspace",
+      f.projectRoot,
+      "--task",
+      receipt.taskId,
+      "--body-sha256",
+      receipt.bodySha256,
+      "--authorization-id",
+      AUTH_ID,
+      "--harness",
+      "real-cli-negative",
+      "--json",
+    ]);
+    expect(claim.status).toBe(0);
+    const claimId = (JSON.parse(claim.stdout) as { claim: { claimId: string } }).claim.claimId;
+    const captured = path.join(f.stateDir, "failed-output.txt");
+    fs.writeFileSync(captured, "failed CLI output\n");
+    expect(
+      runCli(f.stateDir, [
+        "record",
+        "--workspace",
+        f.projectRoot,
+        "--task",
+        receipt.taskId,
+        "--iteration",
+        "1",
+        "--exit-status",
+        "failed",
+        "--taskbook-body-sha256",
+        receipt.bodySha256,
+        "--taskbook-claim-id",
+        claimId,
+        "--taskbook-authorization-id",
+        AUTH_ID,
+        "--command",
+        "pnpm test",
+        "--output-file",
+        captured,
+        "--exit-code",
+        "1",
+      ]).status
+    ).toBe(0);
+    const execution = readExecutionRecords(f)[0];
+    const wrongOutputId = runCli(f.stateDir, [
+      "taskbook",
+      "finish",
+      "--workspace",
+      f.projectRoot,
+      "--task",
+      receipt.taskId,
+      "--claim-id",
+      claimId,
+      "--authorization-id",
+      AUTH_ID,
+      "--body-sha256",
+      receipt.bodySha256,
+      "--status",
+      "succeeded",
+      "--execution-timestamp",
+      String(execution.timestamp),
+      "--output-id",
+      String(Number(execution.outputId) + 1),
+      "--json",
+    ]);
+    expect(wrongOutputId.status).toBe(1);
+    expect(wrongOutputId.stdout).toContain("No read-back execution record");
+    const finish = runCli(f.stateDir, [
+      "taskbook",
+      "finish",
+      "--workspace",
+      f.projectRoot,
+      "--task",
+      receipt.taskId,
+      "--claim-id",
+      claimId,
+      "--authorization-id",
+      AUTH_ID,
+      "--body-sha256",
+      receipt.bodySha256,
+      "--status",
+      "succeeded",
+      "--execution-timestamp",
+      String(execution.timestamp),
+      "--output-id",
+      String(execution.outputId),
+      "--json",
+    ]);
+    expect(finish.status).toBe(1);
+    expect(JSON.parse(finish.stdout)).toMatchObject({ ok: false });
+    expect(finish.stdout).toContain("exitStatus ok");
+    expect(readExecutionRecords(f)).toHaveLength(1);
+  });
+
+  it("rejects a real CLI claim when authorization-id is omitted", () => {
+    const f = fixture("c2c-g2-cli-authorization-required");
+    const receipt = submit(f);
+    const claim = runCli(f.stateDir, [
+      "taskbook",
+      "claim",
+      "--workspace",
+      f.projectRoot,
+      "--task",
+      receipt.taskId,
+      "--body-sha256",
+      receipt.bodySha256,
+      "--json",
+    ]);
+    expect(claim.status).toBe(1);
+    expect(`${claim.stdout}\n${claim.stderr}`).toContain("required option '--authorization-id <id>'");
+    const taskDir = path.join(f.stateDir, "tasks", f.workspace.id);
+    expect(fs.readdirSync(taskDir)).toEqual([`${receipt.taskId}.json`]);
+  });
+
+  it("rejects a real execution record whose output metadata names another task", () => {
+    const f = fixture("c2c-g2-cli-output-link");
+    const receipt = submit(f);
+    const claim = runCli(f.stateDir, [
+      "taskbook",
+      "claim",
+      "--workspace",
+      f.projectRoot,
+      "--task",
+      receipt.taskId,
+      "--body-sha256",
+      receipt.bodySha256,
+      "--authorization-id",
+      AUTH_ID,
+      "--harness",
+      "output-link-negative",
+      "--json",
+    ]);
+    expect(claim.status).toBe(0);
+    const claimId = (JSON.parse(claim.stdout) as { claim: { claimId: string } }).claim.claimId;
+
+    const previousStateDir = process.env.C2C_STATE_DIR;
+    process.env.C2C_STATE_DIR = f.stateDir;
+    let outputId: number;
+    const timestamp = new Date().toISOString();
+    try {
+      const output = saveExecutionOutput(f.workspace.id, {
+        command: "pnpm test",
+        raw: "foreign task output",
+        exitCode: 0,
+        taskId: TASK_ID_B,
+        iteration: 1,
+      });
+      outputId = output.id;
+      appendExecutionRecord(f.workspace.id, {
+        taskId: receipt.taskId,
+        iteration: 1,
+        changedFiles: 0,
+        tests: "foreign metadata fixture",
+        exitStatus: "ok",
+        timestamp,
+        notes: encodeTaskbookEvidenceNote({
+          bodySha256: receipt.bodySha256,
+          claimId,
+          authorizationId: AUTH_ID,
+        }),
+        outputId,
+        outputAvailable: true,
+      });
+    } finally {
+      if (previousStateDir === undefined) delete process.env.C2C_STATE_DIR;
+      else process.env.C2C_STATE_DIR = previousStateDir;
+    }
+
+    const finish = runCli(f.stateDir, [
+      "taskbook",
+      "finish",
+      "--workspace",
+      f.projectRoot,
+      "--task",
+      receipt.taskId,
+      "--claim-id",
+      claimId,
+      "--authorization-id",
+      AUTH_ID,
+      "--body-sha256",
+      receipt.bodySha256,
+      "--status",
+      "succeeded",
+      "--execution-timestamp",
+      timestamp,
+      "--output-id",
+      String(outputId),
+      "--json",
+    ]);
+    expect(finish.status).toBe(1);
+    expect(finish.stdout).toContain("metadata does not match");
+  });
+});
+
+afterAll(() => cleanupExternalTempDirs());

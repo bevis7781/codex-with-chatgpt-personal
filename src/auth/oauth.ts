@@ -77,16 +77,30 @@ function pairingPage(opts: {
     "git.read": "Read git status and diffs",
     "execution.read": "Read Codex execution summaries",
     offline_access: "Stay connected between sessions",
+    "taskbook.submit":
+      "Submit bounded Taskbook text into C2C task state (no project file writes, no command execution)",
   };
-  const scopeList = opts.scopes
-    .map((scope) => `<li>${escapeHtml(scopeLabels[scope] ?? scope)}</li>`)
-    .join("");
-  const errorHtml = opts.error
-    ? `<p class="error" role="alert">${escapeHtml(opts.error)}</p>`
-    : "";
   const escapedProductName = escapeHtml(PRODUCT_NAME);
   const escapedWorkspaceName = escapeHtml(opts.workspaceName);
   const escapedRequestId = escapeHtml(opts.requestId);
+  const rendersTaskbookSubmit = opts.scopes.includes("taskbook.submit");
+  const readScopes = opts.scopes.filter((scope) => scope !== "taskbook.submit");
+  const renderScopeList = (scopes: string[]): string =>
+    `<ul>${scopes.map((scope) => `<li>${escapeHtml(scopeLabels[scope] ?? scope)}</li>`).join("")}</ul>`;
+  // A request that includes bounded Taskbook mutation must never be labeled
+  // "(read-only)"; mutation is described separately from read access.
+  const accessLine = rendersTaskbookSubmit
+    ? `ChatGPT is requesting access to workspace <strong>${escapedWorkspaceName}</strong>:`
+    : `ChatGPT is requesting access to workspace <strong>${escapedWorkspaceName}</strong> (read-only):`;
+  const scopeList = rendersTaskbookSubmit
+    ? (readScopes.length > 0 ? `<p class="group">Read access:</p>${renderScopeList(readScopes)}` : "") +
+      `<p class="group">Bounded Taskbook submission:</p>${renderScopeList(["taskbook.submit"])}` +
+      `<p class="note">This submits bounded Taskbook text into C2C task state only. ` +
+      `It does not write project files and does not run commands.</p>`
+    : renderScopeList(readScopes);
+  const errorHtml = opts.error
+    ? `<p class="error" role="alert">${escapeHtml(opts.error)}</p>`
+    : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -105,6 +119,8 @@ function pairingPage(opts: {
   .sub { color: #86868b; font-size: 14px; margin: 0 0 20px; }
   ul { font-size: 13px; color: #6e6e73; padding-left: 18px; margin: 0 0 24px; }
   li { margin-bottom: 4px; }
+  .group { font-size: 13px; font-weight: 600; margin: 0 0 4px; }
+  .note { font-size: 12px; color: #86868b; margin: 0 0 24px; }
   input[type=text] { width: 100%; box-sizing: border-box; font-size: 24px; letter-spacing: 4px;
           text-align: center; text-transform: uppercase; padding: 12px; border: 1.5px solid #d2d2d7;
           border-radius: 10px; font-family: ui-monospace, monospace; background: transparent; color: inherit; }
@@ -119,8 +135,8 @@ function pairingPage(opts: {
 <body>
 <div class="card">
   <h1>${escapedProductName}</h1>
-  <p class="sub">ChatGPT is requesting access to workspace <strong>${escapedWorkspaceName}</strong> (read-only):</p>
-  <ul>${scopeList}</ul>
+  <p class="sub">${accessLine}</p>
+  ${scopeList}
   <form method="POST" action="authorize">
     <input type="hidden" name="request_id" value="${escapedRequestId}">
     <input type="text" name="pairing_code" id="pairing_code" placeholder="XXXX-XXXX"
@@ -222,6 +238,12 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
       return;
     }
     const scopes = filterScopes(query.scope);
+    if (scopes.length === 0) {
+      // Explicit request containing only unsupported scopes: fail closed instead of
+      // falling back to default or all-supported scopes.
+      fail("invalid_scope", "None of the requested scopes are supported.");
+      return;
+    }
     const request: PendingAuthRequest = {
       id: randomBytes(16).toString("hex"),
       clientId: client.clientId,
