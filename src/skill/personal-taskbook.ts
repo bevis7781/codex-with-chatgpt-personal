@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getCodexHome } from "../config/sandbox-allow.js";
-import { getStateDir } from "../config/paths.js";
+import { bindStateRoot, getStateDir } from "../config/paths.js";
 
 export const PERSONAL_TASKBOOK_SKILL_DIR = "codex-with-chatgpt-personal-taskbook";
 export const PERSONAL_TASKBOOK_MANAGED_MARKER =
@@ -82,6 +82,9 @@ export function installPersonalTaskbookSkills(
   ];
 
   for (const file of files) preflightTarget(file);
+  // Bind the state root before writing managed Skill files so a later CLI or
+  // bridge invocation without an environment override resolves identically.
+  bindStateRoot(stateDir, codexHome);
   for (const file of files) ensureParentDirectory(file.destination);
 
   let changed = false;

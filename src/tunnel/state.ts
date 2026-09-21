@@ -46,9 +46,13 @@ export function isNamedTunnelReady(state: TunnelState): boolean {
   );
 }
 
-export function namedTunnelBinding(state: TunnelState): { tunnelName: string; hostname: string } | null {
+export function namedTunnelBinding(state: TunnelState): { tunnelName: string; tunnelId?: string; hostname: string } | null {
   if (!isNamedTunnelReady(state) || !state.tunnelName || !state.hostname) return null;
-  return { tunnelName: state.tunnelName, hostname: state.hostname };
+  return {
+    tunnelName: state.tunnelName,
+    ...(state.tunnelId !== undefined ? { tunnelId: state.tunnelId } : {}),
+    hostname: state.hostname,
+  };
 }
 
 export const TUNNEL_CHOICE_PROMPT = `连 ChatGPT 之前，有一条可选的。

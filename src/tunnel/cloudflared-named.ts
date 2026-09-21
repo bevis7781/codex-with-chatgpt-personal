@@ -8,9 +8,11 @@ import type { TunnelDoctorReport, TunnelProvider, TunnelStatus } from "./provide
 
 const CONNECTED_RE = /registered tunnel connection/i;
 const HOSTNAME_RE = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
+const TUNNEL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![\s\S])/i;
 
 export interface CloudflaredNamedTunnelOptions {
   tunnelName: string;
+  tunnelId?: string;
   hostname: string;
   logger?: Logger;
   binaryOverride?: string;
@@ -40,6 +42,7 @@ export function normalizeNamedTunnelHostname(hostname: string): string {
 export class CloudflaredNamedTunnel implements TunnelProvider {
   readonly name = "cloudflare-named";
   private readonly tunnelName: string;
+  private readonly tunnelId?: string;
   private readonly hostname: string;
   private readonly logger: Logger;
   private readonly binaryOverride?: string;
@@ -54,7 +57,11 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
     if (!tunnelName || tunnelName.length > 128) {
       throw new Error("Named tunnel name must be between 1 and 128 characters");
     }
+    if (opts.tunnelId !== undefined && (typeof opts.tunnelId !== "string" || !TUNNEL_ID_RE.test(opts.tunnelId))) {
+      throw new Error("Named tunnel ID must be a UUID in 8-4-4-4-12 hexadecimal form");
+    }
     this.tunnelName = tunnelName;
+    this.tunnelId = opts.tunnelId;
     this.hostname = normalizeNamedTunnelHostname(opts.hostname);
     this.logger = opts.logger ?? nullLogger;
     this.binaryOverride = opts.binaryOverride;
@@ -88,7 +95,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
           "--url",
           `http://127.0.0.1:${localPort}`,
           "run",
-          this.tunnelName,
+          this.tunnelId ?? this.tunnelName,
         ],
         { stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
       );

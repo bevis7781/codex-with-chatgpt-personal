@@ -23,6 +23,7 @@ function tunnelForWorkspace(workspaceId: string, logger: Logger): TunnelProvider
   if (binding) {
     return new CloudflaredNamedTunnel({
       tunnelName: binding.tunnelName,
+      tunnelId: binding.tunnelId,
       hostname: binding.hostname,
       logger,
     });

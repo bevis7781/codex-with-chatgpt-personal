@@ -40,6 +40,10 @@ The `--workspace` value and `C2C_STATE_DIR` must remain the same for
 state root already bound by the bridge. Do not use `npm -g`, `pnpm -g`, or a
 separate global `c2c` installation.
 
+The installer binds one machine-local state root and renders the same binding
+into this Rule. Keep the rendered value unchanged; if local `status` and
+`inspect` disagree, stop instead of switching roots or recreating state.
+
 ## Commands
 
 In the procedure below, `c2c` means the repository-local CLI invocation shown

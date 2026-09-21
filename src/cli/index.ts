@@ -30,6 +30,7 @@ import {
   CloudflareNetworkBlockedError,
   isCloudflareNetworkBlocked,
 } from "../tunnel/errors.js";
+import { isCloudflareHealthProbeNetworkError } from "../tunnel/health.js";
 import { Logger } from "../logger/index.js";
 import { getStateDir } from "../config/paths.js";
 import { ensureSandboxAllowlist, getCodexConfigPath, isStateDirAllowlisted } from "../config/sandbox-allow.js";
@@ -658,12 +659,25 @@ program
         try {
           const response = await fetch(`${currentUrl}/health`, { signal: AbortSignal.timeout(8000) });
           healthy = response.ok;
-        } catch {
+        } catch (error) {
           healthy = false;
+          if (
+            namedReady &&
+            info.tunnel.provider === "cloudflare-named" &&
+            info.tunnel.running &&
+            isCloudflareHealthProbeNetworkError(error)
+          ) {
+            cloudflareNetworkBlocked = true;
+            report.tunnel = {
+              ok: false,
+              code: CLOUDFLARE_NETWORK_BLOCKED,
+              detail: CLOUDFLARE_NETWORK_BLOCKED,
+            };
+          }
         }
       }
 
-      if ((!currentUrl || !healthy) && opts.fix && (expectedPublic || info.tunnel.running)) {
+      if (!cloudflareNetworkBlocked && (!currentUrl || !healthy) && opts.fix && (expectedPublic || info.tunnel.running)) {
         try {
           const binaries = detectTunnelBinaries();
           if (!binaries.cloudflared) {

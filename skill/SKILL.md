@@ -177,6 +177,10 @@ that close the tab, hide the window, or stall on the settings page.
 - If the checkout has no `node_modules` or no `dist/`, first run
   `corepack pnpm install && corepack pnpm build` inside it.
 - Always pass `-w <workspace root>` (the project the user is working on, NOT the c2c repo).
+- `c2c skill install` and `c2c setup` keep one machine-local C2C state-root
+  binding for the CLI, bridge, and Personal Taskbook Rule. Do not add a
+  project-local wrapper or manually switch roots to work around a mismatch;
+  stop and inspect the binding instead.
 
 ## Daily update check
 

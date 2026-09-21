@@ -24,7 +24,13 @@ import {
   provisionNamedTunnel,
   type CloudflaredAccount,
 } from "../src/tunnel/named-provision.js";
-import { isNamedTunnelReady, needsTunnelChoice, readTunnelState, writeTunnelState } from "../src/tunnel/state.js";
+import {
+  isNamedTunnelReady,
+  namedTunnelBinding,
+  needsTunnelChoice,
+  readTunnelState,
+  writeTunnelState,
+} from "../src/tunnel/state.js";
 import { cleanup, isolateStateDir, makeTmpDir, write } from "./helpers.js";
 
 const stateDirs: string[] = [];
@@ -219,6 +225,71 @@ describe("normalizeNamedTunnelHostname", () => {
   });
 });
 
+describe("CloudflaredNamedTunnel identity", () => {
+  const TUNNEL_ID = "11111111-2222-4333-8444-555555555555";
+
+  it("runs an existing tunnel by ID when one is persisted", async () => {
+    const child = new FakeCloudflaredProcess();
+    const spawnImpl = vi.fn(() => child as unknown as ChildProcess);
+    const tunnel = new CloudflaredNamedTunnel({
+      tunnelName: "c2c-test",
+      tunnelId: TUNNEL_ID,
+      hostname: "c2c-test.example.com",
+      binaryOverride: "cloudflared",
+      spawnImpl,
+    });
+
+    const starting = tunnel.start(3333);
+    expect(spawnImpl).toHaveBeenCalledWith(
+      "cloudflared",
+      ["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:3333", "run", TUNNEL_ID],
+      { stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
+    );
+    child.stderr.write("INF registered tunnel connection\n");
+    await expect(starting).resolves.toBe("https://c2c-test.example.com");
+    await tunnel.stop();
+  });
+
+  it("keeps the tunnel name as the legacy run target when no ID is present", async () => {
+    const child = new FakeCloudflaredProcess();
+    const spawnImpl = vi.fn(() => child as unknown as ChildProcess);
+    const tunnel = new CloudflaredNamedTunnel({
+      tunnelName: "c2c-legacy",
+      hostname: "c2c-legacy.example.com",
+      binaryOverride: "cloudflared",
+      spawnImpl,
+    });
+
+    const starting = tunnel.start(3333);
+    expect(spawnImpl).toHaveBeenCalledWith(
+      "cloudflared",
+      ["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:3333", "run", "c2c-legacy"],
+      { stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
+    );
+    child.stderr.write("INF registered tunnel connection\n");
+    await expect(starting).resolves.toBe("https://c2c-legacy.example.com");
+    await tunnel.stop();
+  });
+
+  it.each(["", " ", `${TUNNEL_ID} `, `${TUNNEL_ID}\n`, "not-a-uuid"])(
+    "rejects an invalid tunnel ID before spawn: %s",
+    (tunnelId) => {
+      const spawnImpl = vi.fn(() => new FakeCloudflaredProcess() as unknown as ChildProcess);
+      expect(
+        () =>
+          new CloudflaredNamedTunnel({
+            tunnelName: "c2c-invalid",
+            tunnelId,
+            hostname: "c2c-invalid.example.com",
+            binaryOverride: "cloudflared",
+            spawnImpl,
+          })
+      ).toThrow(/UUID/i);
+      expect(spawnImpl).not.toHaveBeenCalled();
+    }
+  );
+});
+
 describe("Cloudflare network-block classification", () => {
   it("classifies the Windows connectex socket-permission failure", () => {
     const error = classifyCloudflareError(
@@ -234,6 +305,30 @@ describe("Cloudflare network-block classification", () => {
     expect(cloudflareFailureCode(new Error("lookup api.cloudflare.com: no such host"))).toBe(
       CLOUDFLARE_NETWORK_BLOCKED
     );
+  });
+
+  it.each([
+    "lookup api.cloudflare.com.: no such host",
+    "lookup region1.v2.argotunnel.com: no such host",
+    "lookup region2.v2.argotunnel.com.: no such host",
+  ])("classifies a known Cloudflare endpoint DNS lookup: %s", (message) => {
+    expect(cloudflareFailureCode(new Error(message))).toBe(CLOUDFLARE_NETWORK_BLOCKED);
+  });
+
+  it("does not classify unrelated or lookalike DNS lookup failures", () => {
+    expect(cloudflareFailureCode(new Error("lookup unrelated.example.: no such host"))).toBeNull();
+    expect(
+      cloudflareFailureCode(new Error("lookup region2.v2.argotunnel.com.attacker.example.: no such host"))
+    ).toBeNull();
+  });
+
+  it("checks each lookup line without pairing a hostname with a later line", () => {
+    expect(
+      cloudflareFailureCode(
+        new Error("lookup unrelated.example.: no such host\nlookup region2.v2.argotunnel.com.: no such host")
+      )
+    ).toBe(CLOUDFLARE_NETWORK_BLOCKED);
+    expect(cloudflareFailureCode(new Error("lookup region2.v2.argotunnel.com.:\nno such host"))).toBeNull();
   });
 
   it("does not classify unrelated cloudflared failures as network-blocked", () => {
@@ -350,6 +445,34 @@ describe("tunnel preference state", () => {
       expect(result.fallback).toBe(true);
       expect(result.state.preference).toBe("quick");
       expect(result.userMessage).toMatch(/临时地址/);
+    });
+  });
+
+  it("preserves a persisted tunnel ID in the named binding", () => {
+    stateDirs.push(isolateStateDir());
+    writeTunnelState({
+      workspaceId: "ws-with-id",
+      preference: "named",
+      provider: "cloudflare-named",
+      tunnelName: "c2c-ws-with-id",
+      tunnelId: "11111111-2222-4333-8444-555555555555",
+      hostname: "c2c-ws-with-id.example.com",
+    });
+    expect(namedTunnelBinding(readTunnelState("ws-with-id"))).toEqual({
+      tunnelName: "c2c-ws-with-id",
+      tunnelId: "11111111-2222-4333-8444-555555555555",
+      hostname: "c2c-ws-with-id.example.com",
+    });
+    writeTunnelState({
+      workspaceId: "ws-without-id",
+      preference: "named",
+      provider: "cloudflare-named",
+      tunnelName: "c2c-ws-without-id",
+      hostname: "c2c-ws-without-id.example.com",
+    });
+    expect(namedTunnelBinding(readTunnelState("ws-without-id"))).toEqual({
+      tunnelName: "c2c-ws-without-id",
+      hostname: "c2c-ws-without-id.example.com",
     });
   });
 

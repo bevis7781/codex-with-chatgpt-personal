@@ -2,16 +2,32 @@ export const CLOUDFLARE_NETWORK_BLOCKED = "CLOUDFLARE_NETWORK_BLOCKED" as const;
 
 export type CloudflareFailureCode = typeof CLOUDFLARE_NETWORK_BLOCKED;
 
+const CLOUDFLARE_DNS_ENDPOINTS = new Set([
+  "api.cloudflare.com",
+  "region1.v2.argotunnel.com",
+  "region2.v2.argotunnel.com",
+]);
+
+const DNS_LOOKUP_FAILURE = /\blookup[ \t]+([a-z0-9.-]+)(?=[ \t:]|$)[^\r\n]*\bno such host\b/gi;
+
+function isKnownCloudflareDnsLookupFailure(message: string): boolean {
+  for (const match of message.matchAll(DNS_LOOKUP_FAILURE)) {
+    const hostname = match[1].replace(/\.$/, "").toLowerCase();
+    if (CLOUDFLARE_DNS_ENDPOINTS.has(hostname)) return true;
+  }
+  return false;
+}
+
 /**
- * Keep this classifier deliberately narrow. It covers the two observed
- * Cloudflare API connectivity failures without turning auth/config/tunnel
- * errors into a generic network diagnosis.
+ * Keep this classifier deliberately narrow. It covers observed Cloudflare
+ * endpoint connectivity failures without turning auth/config/tunnel errors
+ * into a generic network diagnosis.
  */
 export function isCloudflareNetworkBlockedMessage(message: string): boolean {
   return (
     /\bconnectex\b[\s\S]*(?:forbidden by its access permissions|access(?:ing)? a socket[\s\S]*forbidden)/i.test(
       message
-    ) || /\blookup\s+api\.cloudflare\.com[\s\S]*\bno such host\b/i.test(message)
+    ) || isKnownCloudflareDnsLookupFailure(message)
   );
 }
 
@@ -32,7 +48,7 @@ export class CloudflareNetworkBlockedError extends Error {
     const normalized = detail.startsWith(`${CLOUDFLARE_NETWORK_BLOCKED}:`)
       ? detail.slice(CLOUDFLARE_NETWORK_BLOCKED.length + 1).trim()
       : detail;
-    super(`${CLOUDFLARE_NETWORK_BLOCKED}: Cloudflare API network access is blocked or unavailable. ${normalized}`);
+    super(`${CLOUDFLARE_NETWORK_BLOCKED}: Cloudflare network access is blocked or unavailable. ${normalized}`);
     this.name = "CloudflareNetworkBlockedError";
   }
 }
