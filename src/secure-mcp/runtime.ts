@@ -121,6 +121,7 @@ const defaultRunner: NativeCommandRunner = {
 interface NativeStatus {
   found: boolean;
   state: "running" | "ready" | "stopped" | "failed" | "unknown";
+  processRunning: boolean | null;
   alias: string | null;
   workspaceId: string | null;
   pid: number | null;
@@ -172,7 +173,8 @@ function parseJsonOutput(output: string): unknown | null {
     .filter(Boolean);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     try {
-      return JSON.parse(lines[index]) as unknown;
+      const parsed = JSON.parse(lines[index]) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
     } catch {
       // The native client may print a short human-readable line before JSON.
     }
@@ -181,7 +183,8 @@ function parseJsonOutput(output: string): unknown | null {
   const end = output.lastIndexOf("}");
   if (start >= 0 && end > start) {
     try {
-      return JSON.parse(output.slice(start, end + 1)) as unknown;
+      const parsed = JSON.parse(output.slice(start, end + 1)) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
     } catch {
       return null;
     }
@@ -191,6 +194,15 @@ function parseJsonOutput(output: string): unknown | null {
 
 function normalizedKey(value: string): string {
   return value.replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
+
+function directValue(value: unknown, keys: string[]): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const wanted = new Set(keys.map(normalizedKey));
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (wanted.has(normalizedKey(key))) return child;
+  }
+  return undefined;
 }
 
 function findValue(value: unknown, keys: string[], depth = 0): unknown {
@@ -211,6 +223,11 @@ function stringValue(value: unknown, keys: string[]): string | null {
   return typeof found === "string" && found.trim() ? found.trim() : null;
 }
 
+function directStringValue(value: unknown, keys: string[]): string | null {
+  const found = directValue(value, keys);
+  return typeof found === "string" && found.trim() ? found.trim() : null;
+}
+
 function booleanValue(value: unknown, keys: string[]): boolean | null {
   const found = findValue(value, keys);
   return typeof found === "boolean" ? found : null;
@@ -226,8 +243,19 @@ function healthBooleanValue(value: unknown, keys: string[]): boolean | null {
   return null;
 }
 
+function directHealthBooleanValue(value: unknown, keys: string[]): boolean | null {
+  const found = directValue(value, keys);
+  if (typeof found === "boolean") return found;
+  if (typeof found !== "string") return null;
+  const normalized = found.trim().toLowerCase();
+  if (["true", "ok", "ready", "healthy"].includes(normalized)) return true;
+  if (["false", "error", "failed", "unhealthy", "not_ready", "not-ready"].includes(normalized)) return false;
+  return null;
+}
+
 function pollHealthValue(value: unknown): string {
-  const found = stringValue(value, ["control_plane_poll_health", "controlplanepollhealth", "poll_health", "pollhealth"]);
+  const raw = directValue(value, ["control_plane_poll_health", "controlplanepollhealth", "poll_health", "pollhealth"]);
+  const found = typeof raw === "string" ? raw : directStringValue(raw, ["state", "status", "phase"]);
   if (!found) return "unknown";
   const normalized = found.toLowerCase();
   if (normalized.includes("healthy") || normalized === "ok" || normalized === "ready") return "healthy";
@@ -246,31 +274,73 @@ function numberValue(value: unknown, keys: string[]): number | null {
   return null;
 }
 
+function directNumberValue(value: unknown, keys: string[]): number | null {
+  const found = directValue(value, keys);
+  if (typeof found === "number" && Number.isInteger(found) && found > 0) return found;
+  if (typeof found === "string" && /^\d+$/.test(found)) {
+    const parsed = Number(found);
+    if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+
 function parseNativeStatus(output: string): NativeStatus {
   const raw = parseJsonOutput(output);
   if (!raw) throw secureError("SECURE_MCP_RUNTIME_STATUS_INVALID");
-  const stateRaw = stringValue(raw, ["status", "state", "phase"])?.toLowerCase() ?? "unknown";
-  const state: NativeStatus["state"] = stateRaw.includes("ready")
-    ? "ready"
-    : stateRaw.includes("run") || stateRaw.includes("connect") || stateRaw.includes("healthy")
-      ? "running"
-      : stateRaw.includes("stop") || stateRaw.includes("exit") || stateRaw.includes("not_found")
+  const processInfo = directValue(raw, ["process"]);
+  const processTargetKind = directStringValue(processInfo, ["target_kind", "targetkind"]);
+  const processTargetValue = directStringValue(processInfo, ["target_value", "targetvalue"]);
+  const local = directValue(raw, ["local"]);
+  const effectiveHealth = directValue(local, ["effective_health", "effectivehealth"]);
+  const healthz = directValue(effectiveHealth, ["healthz"]);
+  const readyz = directValue(effectiveHealth, ["readyz"]);
+  const stateRaw = (
+    directStringValue(raw, ["runtime_state", "runtimestate"]) ??
+    stringValue(raw, ["status", "state", "phase"]) ??
+    "unknown"
+  ).toLowerCase();
+  const state: NativeStatus["state"] = stateRaw.includes("fail") || stateRaw.includes("error") || stateRaw.includes("unhealthy") || stateRaw.includes("not_ready") || stateRaw.includes("not-ready")
+    ? "failed"
+    : stateRaw.includes("ready")
+      ? "ready"
+      : stateRaw.includes("stop") || stateRaw.includes("exit") || stateRaw.includes("not_found") || stateRaw.includes("not running")
         ? "stopped"
-        : stateRaw.includes("fail") || stateRaw.includes("error")
-          ? "failed"
+        : stateRaw.includes("run") || stateRaw.includes("connect") || stateRaw === "healthy"
+          ? "running"
           : "unknown";
+  const topLevelMcpServerUrl = directStringValue(raw, ["mcp_server_url", "mcpserverurl", "target_url", "targeturl"]);
+  const health =
+    directHealthBooleanValue(raw, ["healthy", "healthz", "health_ok", "healthok", "health"]) ??
+    healthBooleanValue(healthz, ["ok", "status"]);
+  const ready =
+    directHealthBooleanValue(raw, ["ready", "readyz", "readiness", "readiness_ok", "readinessok"]) ??
+    healthBooleanValue(readyz, ["ok", "status"]);
   return {
     found: true,
     state,
+    processRunning: directHealthBooleanValue(raw, ["process_running", "processrunning"]),
     alias: stringValue(raw, ["alias", "runtime_alias"]),
     workspaceId: stringValue(raw, ["workspace_id", "workspaceid"]),
-    pid: numberValue(raw, ["pid", "process_id", "processid", "runtime_pid"]),
-    tunnelId: stringValue(raw, ["tunnel_id", "tunnelid"]),
-    mcpServerUrl: stringValue(raw, ["mcp_server_url", "mcpserverurl", "target_url", "targeturl"]),
-    healthUrl: stringValue(raw, ["health_url", "healthz_url", "health_endpoint", "healthendpoint"]),
-    readyUrl: stringValue(raw, ["ready_url", "readyz_url", "readiness_url", "readinessendpoint"]),
-    health: healthBooleanValue(raw, ["healthy", "healthz", "health_ok", "healthok", "health"]),
-    ready: healthBooleanValue(raw, ["ready", "readyz", "readiness", "readiness_ok", "readinessok"]),
+    pid:
+      directNumberValue(raw, ["pid", "process_id", "processid", "runtime_pid"]) ??
+      directNumberValue(processInfo, ["pid"]) ??
+      numberValue(raw, ["pid", "process_id", "processid", "runtime_pid"]),
+    tunnelId:
+      directStringValue(raw, ["tunnel_id", "tunnelid"]) ??
+      directStringValue(processInfo, ["tunnel_id", "tunnelid"]) ??
+      stringValue(raw, ["tunnel_id", "tunnelid"]),
+    mcpServerUrl:
+      topLevelMcpServerUrl ??
+      (processTargetKind?.toLowerCase() === "server_url" ? processTargetValue : null) ??
+      stringValue(raw, ["mcp_server_url", "mcpserverurl", "target_url", "targeturl"]),
+    healthUrl:
+      directStringValue(raw, ["health_url", "healthz_url", "health_endpoint", "healthendpoint"]) ??
+      directStringValue(healthz, ["url"]),
+    readyUrl:
+      directStringValue(raw, ["ready_url", "readyz_url", "readiness_url", "readinessendpoint"]) ??
+      directStringValue(readyz, ["url"]),
+    health,
+    ready,
     controlPlanePollHealth: pollHealthValue(raw),
     binaryPath: stringValue(raw, ["binary", "binary_path", "binarypath", "tunnel_client_bin", "tunnelclientbin"]),
     raw,
@@ -436,7 +506,7 @@ function clearRuntimeState(paths: SecureMcpPaths, workspaceId: string): void {
   fs.rmSync(file, { force: false });
 }
 
-async function fetchHealth(url: string, expectedStatus: string): Promise<boolean> {
+async function fetchBridgeHealth(url: string, expectedStatus: string): Promise<boolean> {
   try {
     const localUrl = validateLoopbackUrl(url);
     const response = await fetch(localUrl, { signal: AbortSignal.timeout(2_000) });
@@ -448,9 +518,31 @@ async function fetchHealth(url: string, expectedStatus: string): Promise<boolean
   }
 }
 
+async function fetchNativeHealth(url: string, expectedStatus: string): Promise<boolean> {
+  try {
+    const localUrl = validateLoopbackUrl(url);
+    const response = await fetch(localUrl, { signal: AbortSignal.timeout(2_000) });
+    if (!response.ok) return false;
+    const text = (await response.text()).trim();
+    try {
+      const body = JSON.parse(text) as { status?: unknown };
+      if (body.status === expectedStatus || body.status === "ok") return true;
+    } catch {
+      // Official tunnel-client health endpoints use plain text.
+    }
+    const normalized = text.toLowerCase();
+    return expectedStatus === "ok" ? normalized === "live" : expectedStatus === "ready" && normalized.startsWith("ready");
+  } catch {
+    return false;
+  }
+}
+
 async function bridgeReadiness(runtime: RuntimeState, workspaceId: string): Promise<boolean> {
   const base = `http://127.0.0.1:${runtime.port}`;
-  const [health, ready] = await Promise.all([fetchHealth(`${base}/healthz`, "ok"), fetchHealth(`${base}/readyz`, "ready")]);
+  const [health, ready] = await Promise.all([
+    fetchBridgeHealth(`${base}/healthz`, "ok"),
+    fetchBridgeHealth(`${base}/readyz`, "ready"),
+  ]);
   if (!health || !ready) return false;
   const observed = await fetch(`${base}/healthz`, { signal: AbortSignal.timeout(2_000) })
     .then((response) => response.json() as Promise<{ workspaceId?: unknown }>)
@@ -493,6 +585,12 @@ async function assessNativeStatus(opts: {
     }
     return { state: "stopped" };
   }
+  if (status.processRunning === false) {
+    if (status.pid && processIsAlive(status.pid)) {
+      return { state: "ambiguous", status, reasonCode: "SECURE_MCP_RUNTIME_PROCESS_STATE_MISMATCH" };
+    }
+    return { state: "stopped" };
+  }
   if (status.alias !== opts.alias) {
     return { state: "ambiguous", status, reasonCode: "SECURE_MCP_RUNTIME_ALIAS_MISMATCH" };
   }
@@ -518,10 +616,10 @@ async function assessNativeStatus(opts: {
   }
   const healthEvidence = status.health === true || status.state === "ready";
   const readyEvidence = status.ready === true || status.state === "ready";
-  if (status.healthUrl && !(await fetchHealth(status.healthUrl, "ok"))) {
+  if (status.healthUrl && !(await fetchNativeHealth(status.healthUrl, "ok"))) {
     return { state: "ambiguous", status, reasonCode: "SECURE_MCP_RUNTIME_HEALTH_FAILED" };
   }
-  if (status.readyUrl && !(await fetchHealth(status.readyUrl, "ready"))) {
+  if (status.readyUrl && !(await fetchNativeHealth(status.readyUrl, "ready"))) {
     return { state: "ambiguous", status, reasonCode: "SECURE_MCP_RUNTIME_READINESS_FAILED" };
   }
   if (status.controlPlanePollHealth === "unhealthy") {
@@ -659,8 +757,8 @@ async function connectOne(opts: {
   const bridge = await liveBridgeFor(opts.record);
   const alias = aliasFor(workspace.id);
   const mcpServerUrl = `http://127.0.0.1:${bridge.runtime.port}/mcp`;
-  const env = trustedChildEnv(opts.config, mcpServerUrl, opts.runtimeKey, opts.paths);
-  const existing = nativeStatus(opts.paths.managedClientBin, alias, env, opts.runner, 10_000);
+  const statusEnv = trustedChildEnv(opts.config, mcpServerUrl, undefined, opts.paths);
+  const existing = nativeStatus(opts.paths.managedClientBin, alias, statusEnv, opts.runner, 10_000);
   const assessment = await assessNativeStatus({
     status: existing,
     expected: opts.record,
@@ -692,7 +790,7 @@ async function connectOne(opts: {
       expected: opts.record,
       mcpServerUrl,
       managed: opts.managed,
-      env,
+      env: statusEnv,
       runner: opts.runner,
       timeoutMs: opts.timeoutMs,
       pollMs: opts.pollMs,

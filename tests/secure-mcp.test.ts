@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
@@ -242,6 +244,7 @@ describe("OpenAI Secure MCP local state", () => {
       expect(first.results).toMatchObject([{ status: "PASS", bridge: { state: "healthy", port: bridge.port } }]);
       const firstConnectCount = calls.filter((call) => call.args[1] === "connect").length;
       expect(firstConnectCount).toBe(1);
+      expect(calls.filter((call) => call.args[1] === "status").every((call) => call.env.C2C_SECURE_MCP_RUNTIME_KEY === undefined)).toBe(true);
       const connectCall = calls.find((call) => call.args[1] === "connect");
       expect(connectCall?.args).toContain("http://127.0.0.1:" + bridge.port + "/mcp");
       expect(connectCall?.args).not.toContain("lifecycle-runtime-key");
@@ -272,6 +275,133 @@ describe("OpenAI Secure MCP local state", () => {
       await bridge.close();
       const disconnected = await disconnectAll({ stateDir, runner, timeoutMs: 5_000 });
       expect(disconnected.ok).toBe(true);
+      delete process.env.C2C_STATE_DIR;
+    }
+  }, 30_000);
+
+  it("parses the official v0.0.14 status schema, accepts native text health, and fails closed", async () => {
+    if (!officialRelease || process.platform !== "win32" || !fs.existsSync(path.join(officialRelease, "tunnel-client.exe"))) return;
+    const stateDir = externalTempDir("c2c-secure-official-status");
+    process.env.C2C_STATE_DIR = stateDir;
+    const workspaceRoot = projectWorkspaceFixture();
+    const record = registerSecureMcpWorkspace({ workspaceRoot, tunnelId, stateDir });
+    const bridge = await startBridge({ workspaceRoot, port: 0, localOnly: true });
+    const nativeHealth = createServer((request, response) => {
+      if (request.url === "/healthz") {
+        response.writeHead(200, { "content-type": "text/plain" });
+        response.end("live\n");
+        return;
+      }
+      if (request.url === "/readyz") {
+        response.writeHead(200, { "content-type": "text/plain" });
+        response.end("ready (mcp initialize requires auth)\n");
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      nativeHealth.once("error", reject);
+      nativeHealth.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = nativeHealth.address();
+    if (!address || typeof address === "string") throw new Error("native health server did not bind to a TCP port");
+    const healthBase = `http://127.0.0.1:${(address as AddressInfo).port}`;
+    const mcpServerUrl = `http://127.0.0.1:${bridge.port}/mcp`;
+    type Mode = "healthy" | "target-mismatch" | "tunnel-mismatch" | "unhealthy" | "malformed";
+    let mode: Mode = "healthy";
+    const calls: Array<{ args: string[]; env: NodeJS.ProcessEnv }> = [];
+    const officialStatus = (): Record<string, unknown> => {
+      if (mode === "malformed") {
+        return {
+          runtime_state: "ready",
+          alias: "c2c-" + record.workspaceId,
+          process_running: true,
+          process: { pid: process.pid, target_kind: "unexpected", target_value: mcpServerUrl },
+          tunnel_id: record.tunnelId,
+          healthy: true,
+          ready: true,
+        };
+      }
+      const unhealthy = mode === "unhealthy";
+      return {
+        alias: "c2c-" + record.workspaceId,
+        control_plane_poll_health: { reason: "no live admin UI system snapshot", state: "unknown" },
+        health_url: `${healthBase}/healthz`,
+        healthy: !unhealthy,
+        local: {
+          effective_health: {
+            healthz: { body: "live", ok: true, status: 200, url: `${healthBase}/healthz` },
+            readyz: { body: "ready (mcp initialize requires auth)", ok: true, status: 200, url: `${healthBase}/readyz` },
+          },
+        },
+        next_steps: [
+          "tunnel-client runtimes status c2c-" + record.workspaceId + " --json",
+          "tunnel-client runtimes status c2c-" + record.workspaceId,
+        ],
+        process: {
+          pid: process.pid,
+          target_kind: "server_url",
+          target_value: mode === "target-mismatch" ? "http://127.0.0.1:6553/mcp" : mcpServerUrl,
+          tunnel_id: record.tunnelId,
+        },
+        process_running: true,
+        ready: !unhealthy,
+        runtime_state: unhealthy ? "unhealthy" : "ready",
+        tunnel_id: mode === "tunnel-mismatch" ? "tunnel_abcdefabcdefabcdefabcdefabcdefab" : record.tunnelId,
+      };
+    };
+    const runner: NativeCommandRunner = {
+      run(_binary, args, options) {
+        calls.push({ args: [...args], env: { ...options.env } });
+        if (args[0] !== "runtimes") return { status: 1, stdout: "", stderr: "unsupported" };
+        if (args[1] === "status") return { status: 0, stdout: JSON.stringify(officialStatus(), null, 2), stderr: "" };
+        if (args[1] === "connect") return { status: 0, stdout: JSON.stringify({ state: "running" }), stderr: "" };
+        if (args[1] === "stop") return { status: 0, stdout: JSON.stringify({ state: "stopped" }), stderr: "" };
+        return { status: 1, stdout: "", stderr: "unsupported" };
+      },
+    };
+
+    try {
+      setRuntimeKey("official-status-runtime-key", stateDir);
+      importManagedRuntime({ sourceDir: officialRelease, stateDir });
+
+      const first = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
+      expect(first.ok).toBe(true);
+      expect(first.results[0]).toMatchObject({
+        status: "PASS",
+        runtime: {
+          state: "ready",
+          mcpServerUrl,
+          controlPlanePollHealth: "unknown",
+        },
+      });
+      expect(calls.filter((call) => call.args[1] === "connect")).toHaveLength(0);
+
+      const second = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
+      expect(second.ok).toBe(true);
+      expect(calls.filter((call) => call.args[1] === "connect")).toHaveLength(0);
+
+      mode = "target-mismatch";
+      const targetMismatch = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
+      expect(targetMismatch.results[0]).toMatchObject({ status: "FAIL", reasonCode: "SECURE_MCP_RUNTIME_TARGET_CHANGED" });
+
+      mode = "tunnel-mismatch";
+      const tunnelMismatch = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
+      expect(tunnelMismatch.results[0]).toMatchObject({ status: "FAIL", reasonCode: "SECURE_MCP_RUNTIME_TUNNEL_MISMATCH" });
+
+      mode = "unhealthy";
+      const unhealthy = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
+      expect(unhealthy.results[0]).toMatchObject({ status: "FAIL", reasonCode: "SECURE_MCP_RUNTIME_FAILED_LIVE" });
+
+      mode = "malformed";
+      const malformed = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
+      expect(malformed.results[0]).toMatchObject({ status: "FAIL", reasonCode: "SECURE_MCP_RUNTIME_TARGET_CHANGED" });
+    } finally {
+      mode = "healthy";
+      await disconnectAll({ stateDir, runner, timeoutMs: 5_000 });
+      await bridge.close();
+      await new Promise<void>((resolve) => nativeHealth.close(() => resolve()));
       delete process.env.C2C_STATE_DIR;
     }
   }, 30_000);
