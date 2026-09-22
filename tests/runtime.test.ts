@@ -180,6 +180,60 @@ describe("findBridgeObservation", () => {
     }
   });
 
+  it("keeps PID-unknown status fail-closed when authenticated admin service is omitted", async () => {
+    const { bridge, runtime } = await startObservedBridge("obs-admin-service-omitted");
+    const before = readRuntimeState(bridge.workspace.id);
+    const requests: Array<{ path: string; method: string }> = [];
+    let healthCorrect = false;
+    let adminServiceOmitted = false;
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = requestUrl(input);
+      requests.push({ path: url.pathname, method: init?.method ?? "GET" });
+      const response = await realFetch(input, init);
+      if (!response.ok) return response;
+      if (url.pathname === "/health") {
+        const health = (await response.clone().json()) as Record<string, unknown>;
+        healthCorrect =
+          health.service === runtime.service &&
+          health.version === runtime.version &&
+          health.status === "ok" &&
+          health.workspaceId === runtime.workspaceId;
+        return response;
+      }
+      if (url.pathname !== "/admin/info") return response;
+      const info = (await response.json()) as Record<string, unknown>;
+      delete info.service;
+      adminServiceOmitted = !Object.prototype.hasOwnProperty.call(info, "service");
+      return new Response(JSON.stringify(info), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const killSpy = denyRecordedPidProbe(runtime);
+
+    try {
+      const observation = await findBridgeObservation(bridge.workspace.id, bridge.workspace.root);
+      expect(healthCorrect).toBe(true);
+      expect(adminServiceOmitted).toBe(true);
+      expect(observation.state).toBe("unknown");
+      if (observation.state === "unknown") expect(observation.reason).toBe("pid_unknown");
+      expect(requests).toEqual([
+        { path: "/health", method: "GET" },
+        { path: "/admin/info", method: "GET" },
+      ]);
+      expect(readRuntimeState(bridge.workspace.id)).toEqual(before);
+
+      const stillServing = await realFetch(`http://127.0.0.1:${bridge.port}/health`);
+      expect(stillServing.ok).toBe(true);
+      expect(await stillServing.json()).toMatchObject({ workspaceId: bridge.workspace.id, status: "ok" });
+    } finally {
+      killSpy.mockRestore();
+      fetchSpy.mockRestore();
+      await bridge.close();
+    }
+  });
+
   it.each([
     { field: "service", value: "foreign-service" },
     { field: "version", value: "0.1.0" },

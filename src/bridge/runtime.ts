@@ -342,7 +342,7 @@ function matchesAuthenticatedRuntimeIdentity(
     health.version === runtime.version &&
     health.status === "ok" &&
     health.workspaceId === runtime.workspaceId &&
-    (info.service === undefined || info.service === runtime.service) &&
+    info.service === runtime.service &&
     info.version === runtime.version &&
     info.workspaceId === runtime.workspaceId &&
     typeof info.workspaceRoot === "string" &&
