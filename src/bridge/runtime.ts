@@ -171,6 +171,18 @@ export interface HealthPayload {
   status: string;
 }
 
+interface AdminInfoPayload {
+  service?: unknown;
+  version?: unknown;
+  workspaceId?: unknown;
+  workspaceRoot?: unknown;
+  pid?: unknown;
+  port?: unknown;
+  startedAt?: unknown;
+}
+
+const MAX_ADMIN_INFO_BYTES = 16 * 1024;
+
 /** Probe a port and check whether a healthy c2c bridge for the workspace answers. */
 export async function probeBridge(
   port: number,
@@ -185,6 +197,35 @@ export async function probeBridge(
     if (body.service !== SERVICE_NAME) return null;
     if (body.status !== "ok" || typeof body.workspaceId !== "string" || !body.workspaceId) return null;
     return body;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Use the persisted credential only for one fixed loopback identity request.
+ * Redirects and oversized responses are rejected; callers cannot select a URL.
+ */
+async function probeBridgeAdminInfo(runtime: RuntimeState, timeoutMs = 2000): Promise<AdminInfoPayload | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`http://127.0.0.1:${runtime.port}/admin/info`, {
+      method: "GET",
+      headers: { authorization: `Bearer ${runtime.adminToken}` },
+      redirect: "error",
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const contentLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > MAX_ADMIN_INFO_BYTES) return null;
+    const text = await response.text();
+    if (Buffer.byteLength(text, "utf8") > MAX_ADMIN_INFO_BYTES) return null;
+    const parsed: unknown = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as AdminInfoPayload;
   } catch {
     return null;
   } finally {
@@ -227,8 +268,14 @@ export async function findBridgeObservation(workspaceId: string, expectedWorkspa
   const health = await probeBridge(runtime.port);
   if (health && health.workspaceId === workspaceId) {
     const pid = observePid(runtime.pid);
-    if (pid !== "present") return { state: "unknown", runtime, reason: "pid_unknown" };
-    return { state: "healthy", runtime };
+    if (pid === "present") return { state: "healthy", runtime };
+    if (pid === "unknown") {
+      const adminInfo = await probeBridgeAdminInfo(runtime);
+      if (adminInfo && matchesAuthenticatedRuntimeIdentity(runtime, health, adminInfo)) {
+        return { state: "healthy", runtime };
+      }
+    }
+    return { state: "unknown", runtime, reason: "pid_unknown" };
   }
   if (health) {
     const pid = observePid(runtime.pid);
@@ -263,6 +310,47 @@ function sameWorkspaceRoot(left: string, right: string): boolean {
   } catch {
     return false;
   }
+}
+
+function sameCanonicalWorkspaceRoot(left: string, right: string): boolean {
+  try {
+    const leftResolved = path.resolve(left);
+    const rightResolved = path.resolve(right);
+    const leftCanonical = fs.realpathSync.native(leftResolved);
+    const rightCanonical = fs.realpathSync.native(rightResolved);
+    const samePath = (a: string, b: string) =>
+      process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+    return (
+      samePath(leftResolved, leftCanonical) &&
+      samePath(rightResolved, rightCanonical) &&
+      samePath(leftCanonical, rightCanonical)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function matchesAuthenticatedRuntimeIdentity(
+  runtime: RuntimeState,
+  health: HealthPayload,
+  info: AdminInfoPayload
+): boolean {
+  return (
+    runtime.service === SERVICE_NAME &&
+    runtime.version === VERSION &&
+    health.service === runtime.service &&
+    health.version === runtime.version &&
+    health.status === "ok" &&
+    health.workspaceId === runtime.workspaceId &&
+    (info.service === undefined || info.service === runtime.service) &&
+    info.version === runtime.version &&
+    info.workspaceId === runtime.workspaceId &&
+    typeof info.workspaceRoot === "string" &&
+    sameCanonicalWorkspaceRoot(info.workspaceRoot, runtime.workspaceRoot) &&
+    info.pid === runtime.pid &&
+    info.port === runtime.port &&
+    info.startedAt === runtime.startedAt
+  );
 }
 
 function sameRuntimeState(left: RuntimeState, right: RuntimeState): boolean {
