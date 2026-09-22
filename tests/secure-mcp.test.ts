@@ -184,6 +184,7 @@ describe("OpenAI Secure MCP local state", () => {
     let mcpServerUrl = "";
     let connected = false;
     let mismatch = false;
+    let statusFailure = false;
     const calls: Array<{ args: string[]; env: NodeJS.ProcessEnv }> = [];
     const paths = resolveSecureMcpPaths(stateDir);
     const runner: NativeCommandRunner = {
@@ -191,7 +192,14 @@ describe("OpenAI Secure MCP local state", () => {
         calls.push({ args: [...args], env: { ...options.env } });
         if (args[0] !== "runtimes") return { status: 1, stdout: "", stderr: "unsupported" };
         if (args[1] === "status") {
-          if (!connected) return { status: 0, stdout: JSON.stringify({ state: "stopped" }), stderr: "" };
+          if (statusFailure) return { status: 1, stdout: "", stderr: "unexpected status failure" };
+          if (!connected) {
+            return {
+              status: 1,
+              stdout: "",
+              stderr: `alias c2c-${record.workspaceId} is not known; run create or connect first`,
+            };
+          }
           return {
             status: 0,
             stdout: JSON.stringify({
@@ -245,11 +253,21 @@ describe("OpenAI Secure MCP local state", () => {
       expect(second.ok).toBe(true);
       expect(calls.filter((call) => call.args[1] === "connect")).toHaveLength(1);
 
+      statusFailure = true;
+      const unexpectedStatusFailure = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
+      expect(unexpectedStatusFailure.ok).toBe(false);
+      expect(unexpectedStatusFailure.results[0]).toMatchObject({
+        status: "FAIL",
+        reasonCode: "SECURE_MCP_RUNTIME_STATUS_FAILED",
+      });
+      statusFailure = false;
+
       mismatch = true;
       const refused = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
       expect(refused.ok).toBe(false);
       expect(refused.results[0]).toMatchObject({ status: "FAIL", reasonCode: "SECURE_MCP_RUNTIME_TARGET_CHANGED" });
       expect(calls.filter((call) => call.args[1] === "stop")).toHaveLength(0);
+      mismatch = false;
     } finally {
       await bridge.close();
       const disconnected = await disconnectAll({ stateDir, runner, timeoutMs: 5_000 });

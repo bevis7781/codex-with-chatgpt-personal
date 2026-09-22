@@ -277,9 +277,18 @@ function parseNativeStatus(output: string): NativeStatus {
   };
 }
 
-function isMissingStatus(result: NativeCommandResult): boolean {
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function isMissingStatus(result: NativeCommandResult, alias?: string): boolean {
   const text = `${result.stdout}\n${result.stderr}`.toLowerCase();
-  return /not found|not running|unknown alias|does not exist|no runtime|missing/.test(text);
+  if (/not found|not running|unknown alias|does not exist|no runtime|missing/.test(text)) return true;
+  if (!alias) return false;
+  const escapedAlias = escapeRegExp(alias.toLowerCase());
+  return new RegExp(
+    `\\balias\\s+${escapedAlias}\\s+is\\s+not\\s+known;\\s*run\\s+create\\s+or\\s+connect\\s+first\\b`
+  ).test(text);
 }
 
 function processIsAlive(pid: number): boolean {
@@ -461,7 +470,7 @@ function nativeStatus(
     throw secureError("SECURE_MCP_RUNTIME_STATUS_FAILED");
   }
   if (result.status !== 0) {
-    if (isMissingStatus(result)) return null;
+    if (isMissingStatus(result, alias)) return null;
     throw secureError("SECURE_MCP_RUNTIME_STATUS_FAILED");
   }
   return parseNativeStatus(result.stdout);
@@ -571,7 +580,7 @@ function nativeStop(opts: {
     env: opts.env,
     timeoutMs: opts.timeoutMs,
   });
-  if (result.status !== 0 && !isMissingStatus(result)) throw secureError("SECURE_MCP_RUNTIME_STOP_FAILED");
+  if (result.status !== 0 && !isMissingStatus(result, opts.alias)) throw secureError("SECURE_MCP_RUNTIME_STOP_FAILED");
 }
 
 async function waitForNativeReady(opts: {
