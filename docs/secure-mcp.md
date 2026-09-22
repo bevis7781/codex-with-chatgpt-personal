@@ -77,10 +77,10 @@ that is distinct from normal reboot recovery through `C2C-Connect-All.cmd`.
 
 ## Acceptance boundary
 
-Construction and publication are not final product acceptance. A separate
-black-box run must use at least two real Personal workspaces with distinct
-permanent Tunnel IDs, verify them in existing Chats, reboot Windows, run the
-wrapper once without opening Codex or running per-workspace `配置`, prove the
-detached runtimes and stable workspace identities recover, and perform the
-explicit `taskbook.submit` pending/no-execution check. Until that run is
-complete, report `FINAL BLACK-BOX ACCEPTANCE: PENDING`.
+D-023 final black-box acceptance has passed within the accepted boundaries:
+multi-workspace Secure MCP `connect-all`, a full Windows reboot, recovery of
+the same established Chats without reopening Codex or running per-workspace
+`配置`, remote `taskbook.submit` remaining pending with no execution before a
+standalone local `Do`, and exactly one read-only acceptance execution
+authorized by that standalone local `Do`. This status does not expand
+acceptance to unrelated legacy or external resources.

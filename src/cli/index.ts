@@ -1596,12 +1596,33 @@ for (const enabled of [true, false] as const) {
     });
 }
 
+const SECURE_MCP_PROGRESS_INTERVAL_MS = 15_000;
+
+function startSecureMcpConnectProgress(): () => void {
+  const startedAt = Date.now();
+  say("正在连接已登记的 Secure MCP 工作区，可能需要一些时间……");
+  const timer = setInterval(() => {
+    const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+    say(`Secure MCP 连接仍在进行（已等待 ${elapsedSeconds} 秒）……`);
+  }, SECURE_MCP_PROGRESS_INTERVAL_MS);
+  timer.unref?.();
+  let stopped = false;
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+  };
+}
+
 async function runSecureBatchCommand(
   kind: "status" | "connect" | "disconnect",
   json: boolean
 ): Promise<void> {
+  let stopProgress: () => void = () => undefined;
   try {
+    if (kind === "connect" && !json) stopProgress = startSecureMcpConnectProgress();
     const batch = kind === "status" ? await statusAll() : kind === "connect" ? await connectAll() : await disconnectAll();
+    stopProgress();
     if (json) {
       say(JSON.stringify(batch));
     } else {
@@ -1609,6 +1630,7 @@ async function runSecureBatchCommand(
     }
     if (!batch.ok) process.exitCode = 1;
   } catch (error) {
+    stopProgress();
     handleCliError(error, json);
   }
 }
@@ -1649,8 +1671,10 @@ taskbookCmd
   .option("-w, --workspace <path>")
   .option("--task <id>", "show one exact task without reserving it")
   .option("--json", "machine-readable output", false)
-  .action((opts: { workspace?: string; task?: string; json: boolean }) => {
+  .option("--compact-json", "omit historical Taskbook bodies from JSON output", false)
+  .action((opts: { workspace?: string; task?: string; json: boolean; compactJson: boolean }) => {
     try {
+      if (opts.compactJson && !opts.json) throw new Error("--compact-json requires --json");
       const workspace = new Workspace(resolveWorkspace(opts.workspace));
       const result = inspectTaskbooks({
         workspaceId: workspace.id,
@@ -1658,7 +1682,14 @@ taskbookCmd
         taskId: opts.task,
       });
       if (opts.json) {
-        say(JSON.stringify({ ok: true, ...result }));
+        const payload = opts.compactJson
+          ? {
+              ok: true,
+              ...result,
+              all: result.all.map(({ body: _body, ...metadata }) => metadata),
+            }
+          : { ok: true, ...result };
+        say(JSON.stringify(payload));
         return;
       }
       if (result.unfinished.length > 0) {

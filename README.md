@@ -3,7 +3,7 @@
 > ChatGPT thinks. Codex works.
 > ChatGPT 负责思考，Codex 负责干活。
 
-This repository is a **Personal Fork** of [`XiaoDuoYa/codex-with-chatgpt`](https://github.com/XiaoDuoYa/codex-with-chatgpt). It keeps the upstream idea—ChatGPT reasons and reviews while the local Codex Harness executes—and adds a bounded V0.1 Taskbook workflow.
+This repository is a **Personal Fork** of [`XiaoDuoYa/codex-with-chatgpt`](https://github.com/XiaoDuoYa/codex-with-chatgpt). It keeps the upstream idea—ChatGPT reasons and reviews while the local Codex Harness executes—while following its own Personal product direction. The upstream project remains this fork's code lineage and an explicit review reference, not the authority for Personal product decisions. This fork adds a bounded V0.1 Taskbook workflow.
 
 > [!IMPORTANT]
 > **遇到问题？** 请先向 Codex 发送 **「更新 Codex with ChatGPT」** 并重试。更新到最新版本可以解决大多数已知问题。  
@@ -13,12 +13,18 @@ This repository is a **Personal Fork** of [`XiaoDuoYa/codex-with-chatgpt`](https
 
 **中文** — ChatGPT 付费订阅的网页版额度大量闲置，Codex 却在消耗紧张的
 API 额度做规划和 Review。本项目把"思考"交给你已付费的网页版 ChatGPT，
-Codex 只负责执行。不用 API Key、不搞逆向代理——官方网页 + 受控 MCP 桥接。
+使用网页订阅而不是推理/API 计费 key。Secure MCP 只在本机使用一个受限的
+Runtime API key（仅 Tunnel Read + Use）；它受 Windows CurrentUser 保护，不进入
+项目、Taskbook、参数或日志，也不会交给模型。不搞逆向代理——官方网页 + 受控 MCP 桥接。
 
 **EN** — ChatGPT Plus/Pro web quota sits idle while your coding agent burns
 scarce API/Codex tokens on planning and review. This project moves the
-thinking to the subscription you already pay for; Codex only executes.
-No API keys, no reverse proxy — official web UI plus a guarded MCP bridge.
+thinking to the web subscription you already pay for; ChatGPT reasoning does
+not use an inference/API billing key. Secure MCP uses a restricted local
+Runtime API key only for Tunnel **Read + Use**. Windows CurrentUser protects
+that key; it is not a project file, Taskbook field, argv/log value, or admin
+key, and it is never exposed to the model. No reverse proxy — official web UI
+plus a guarded MCP bridge.
 
 ## What it is · 这是什么
 
@@ -76,9 +82,15 @@ may be configured; loopback MCP and OAuth stay direct.
 After onboarding, `C2C-Connect-All.cmd` is the bounded, one-shot reboot
 recovery action. It accepts no workspace, path, process, or arbitrary command
 arguments, operates only on enabled local registrations, and never inspects or
-executes Taskbooks. Secure MCP failures do not silently fall back to
+executes Taskbooks. While reconnecting for a human, it provides bounded
+progress feedback. Secure MCP failures do not silently fall back to
 Cloudflare; the retained Cloudflare Named/Quick path is available only through
 an explicit legacy command.
+
+The final black-box acceptance is complete: multi-workspace Secure
+MCP/connect-all, a full Windows reboot, and recovery of established Chats were
+verified. Remote submit remains non-executing until standalone local `Do`; one
+standalone `Do` authorized exactly one accepted execution.
 
 See [docs/secure-mcp.md](docs/secure-mcp.md) for local setup and the final
 black-box acceptance boundary.
@@ -160,32 +172,36 @@ I am a non-technical user — do everything yourself:
 ```
 
 
-**Updates · 更新** — The Skill checks GitHub once a day and updates itself when a
-new version is released; no action needed. You can also say "更新 Codex with ChatGPT"
-anytime. / Skill 每天自动检查一次 GitHub，有新版本会自动更新，无需任何操作；
-也可以随时对 Codex 说"更新 Codex with ChatGPT"。
+**Updates · 更新** — At the start of supported workflows, the managed Skill
+performs a cached daily GitHub update check and can update itself when a new
+version is available. This is a Skill/workflow check, not a background Windows
+updater service. You can also say "更新 Codex with ChatGPT" anytime. / Skill
+会在支持的工作流开始时按缓存策略每天最多检查一次 GitHub 更新，并在有新版本
+时自行更新；这是 Skill/工作流检查，不是常驻的 Windows 后台更新服务。也可以
+随时对 Codex 说"更新 Codex with ChatGPT"。
 
 ---
 
 *The sections below are in English. 以下详细内容为英文，中文完整版见
 [README.zh-CN.md](README.zh-CN.md)。*
 
-## Install → Personal setup → Use (manual)
+## Use after Personal setup (manual)
 
-1. Install the Skills: from the checkout run `node bin/c2c.js skill install`.
-   This installs the C2C Skill and the explicit Personal Taskbook entry point.
-2. Import the approved local runtime, set the hidden Runtime API key, and
-   register one permanent Tunnel ID. In the bound C2C Skill context, tell
-   Codex: **"配置"**. Personal setup does not ask you to choose Cloudflare.
-3. Complete only the one-time Platform/App/OAuth action Codex gives you. When
+After the one-time install and onboarding above:
+
+1. In an already bound C2C Skill context, tell Codex **"配置"** if setup is
+   not complete. Personal setup does not ask you to choose Cloudflare.
+2. Complete only the one-time Platform/App/OAuth action Codex gives you. When
    that action is ready to authorize, use the fresh pairing code if requested.
-4. After authorization, use Codex normally: **"Use Codex with ChatGPT to
+3. After authorization, use Codex normally: **"Use Codex with ChatGPT to
    implement XXX."** For a bound Personal Taskbook conversation, standalone
    `Read` is view-only and standalone `Do` runs at most one eligible task before
    stopping.
 
-That's the whole manual. After onboarding, run `C2C-Connect-All.cmd` once after
-a reboot; it uses only local registrations and forwards no arguments.
+After onboarding, run `C2C-Connect-All.cmd` once after a reboot; it uses only
+local registrations and forwards no arguments. The Personal-first path does not
+automatically create a ChatGPT Project or chat, drive the browser, or force
+connector verification.
 
 ```
 Name: Codex with ChatGPT · <workspace>
@@ -213,36 +229,36 @@ Credentials stay in the OS app state directory, not in the project.
 ## How it works
 
 ```
-             ┌───────────────────────────┐
-             │       ChatGPT Web         │
-             │  Reason / Plan / Review   │
-             └──────────┬──────────▲─────┘
-                        │          │
-               MCP      │          │ Computer Use
-            Data Plane  │          │ Control Plane (<1 KB messages)
-                        ▼          │
-             ┌─────────────────────┐
-             │      C2C Bridge     │   loopback-only HTTP server
-             │  guarded MCP       │   OAuth 2.1 + one-time pairing code
-             │  OAuth + Pairing    │   Cloudflare Quick Tunnel
-             │  Tunnel Manager     │
-             └──────────┬──────────┘
-                        │  guarded access
-                        ▼
-             ┌─────────────────────┐          ┌─────────────────────┐
-             │   Local Workspace   │◀─────────│    Codex Harness    │
-             └─────────────────────┘ edit/git │ shell / tests / fix │
-                                              └─────────────────────┘
+              ┌───────────────────────────┐
+              │       ChatGPT Web         │
+              │  Reason / Plan / Review   │
+              └─────────────┬─────────────┘
+                            │ OpenAI Secure MCP permanent Tunnel
+                            │ (Personal default data plane)
+                            ▼
+              ┌───────────────────────────┐
+              │   loopback C2C Bridge      │
+              │ guarded MCP read tools +   │
+              │ bounded taskbook.submit   │
+              └─────────────┬─────────────┘
+                            │ guarded workspace access
+                            ▼
+              ┌─────────────────────┐    ┌────────────────────────┐
+              │   Local Workspace   │◀──▶│    Codex Harness        │
+              └─────────────────────┘    │ standalone local Do →  │
+                                         │ authorize one task     │
+                                         └────────────────────────┘
 ```
 
-- **Control plane (Computer Use)**: Codex and ChatGPT exchange tiny structured
-  `[C2C]` state messages — `INIT → PLAN → EXECUTED → REVIEW → DONE`. No diffs,
-  no logs, no file bodies are ever pasted.
-- **Data plane (MCP)**: ChatGPT pulls what it needs through the existing
-  read-only workspace, diff, test, and evidence tools. With the explicit
-  `taskbook.submit` scope, it may also submit `title + body` into workspace-
-  scoped C2C task state; that mutation never writes project files or executes
-  commands.
+- **Personal data plane**: ChatGPT uses the permanent OpenAI Secure MCP Tunnel
+  to reach the loopback C2C Bridge. The Bridge exposes guarded read tools and,
+  with the explicit `taskbook.submit` scope, bounded `title + body` submission;
+  it never writes project files or executes commands.
+- **Execution boundary**: The local Codex Harness owns project edits, git,
+  shells, tests, and fixes. A standalone local `Do` authorizes at most one
+  eligible Taskbook execution; submission alone never starts it.
+- **Legacy compatibility**: Cloudflare Named/Quick remains available only for
+  explicitly selected legacy operation. It is not the Personal default.
 - **Independent review**: after Codex executes, ChatGPT inspects the actual
   git diff and test records through MCP — it never trusts "all tests passed"
   claims blindly.
@@ -263,9 +279,11 @@ Credentials stay in the OS app state directory, not in the project.
 - **Knowing the URL grants nothing**: the public MCP endpoint requires OAuth 2.1
   (PKCE S256, dynamic client registration, rotating refresh tokens). Without a
   token: 401. Wrong workspace: 403.
-- **The model never sees long-lived credentials**: the only secret that ever
-  touches a browser is a one-time pairing code (5-minute TTL, 5 attempts,
-  rate-limited, destroyed on use).
+- **Credentials stay local and bounded**: the restricted Runtime API key is
+  CurrentUser-protected and used only for Secure MCP Tunnel Read + Use; the
+  model never receives it. The only secret intentionally entered into ChatGPT
+  is a one-time pairing code (5-minute TTL, 5 attempts, rate-limited, destroyed
+  on use).
 
 Full threat model: [docs/security.md](docs/security.md)
 
@@ -276,7 +294,7 @@ pnpm install
 pnpm build          # -> dist/, exposes the `c2c` bin
 pnpm test           # vitest suite (path security, OAuth, pairing, MCP e2e)
 
-c2c setup           # bridge + tunnel + pairing code, all in one
+c2c setup           # Secure-MCP-first; add --legacy-cloudflare only explicitly
 c2c skill install   # install/update the C2C and Personal Taskbook Skills
 c2c sandbox-allow   # whitelist the settings dir in Codex (macOS + Windows)
 c2c status / doctor / pair / unpair / logs / stop
@@ -320,13 +338,3 @@ unknown NTFS reparse types remain outside the verified V0.1 threat model.
 ## License
 
 [MIT](LICENSE)
-
-## Star History
-
-<a href="https://www.star-history.com/?repos=xiaoduoya%2Fcodex-with-chatgpt&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=xiaoduoya/codex-with-chatgpt&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=xiaoduoya/codex-with-chatgpt&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=xiaoduoya/codex-with-chatgpt&type=date&legend=top-left" />
- </picture>
-</a>

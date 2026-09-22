@@ -413,6 +413,33 @@ describe("OpenAI Secure MCP local state", () => {
     expect(wrapper.toLowerCase()).not.toContain("taskbook");
     expect(wrapper.toLowerCase()).not.toContain("powershell");
   });
+
+  it("keeps bounded human connect progress at the CLI boundary", () => {
+    const cli = fs.readFileSync(path.join(process.cwd(), "src", "cli", "index.ts"), "utf8");
+    const helperStart = cli.indexOf("function startSecureMcpConnectProgress");
+    const batchStart = cli.indexOf("async function runSecureBatchCommand");
+    const batchEnd = cli.indexOf("for (const [name, kind]", batchStart);
+    expect(helperStart).toBeGreaterThanOrEqual(0);
+    expect(batchStart).toBeGreaterThan(helperStart);
+    expect(batchEnd).toBeGreaterThan(batchStart);
+
+    const helper = cli.slice(helperStart, batchStart);
+    const batch = cli.slice(batchStart, batchEnd);
+    expect(cli).toContain("const SECURE_MCP_PROGRESS_INTERVAL_MS = 15_000");
+    expect(helper).toContain("clearInterval(timer)");
+    expect(helper).toContain("timer.unref?.()");
+    expect(helper).toContain("正在连接已登记的 Secure MCP 工作区");
+    expect(helper).toContain("Secure MCP 连接仍在进行");
+    expect(batch).toContain("kind === \"connect\" && !json");
+    expect(batch.match(/stopProgress\(\);/g)).toHaveLength(2);
+
+    const stopBeforeJson = batch.indexOf("stopProgress();\n    if (json)");
+    const stopBeforeError = batch.indexOf("stopProgress();\n    handleCliError");
+    expect(stopBeforeJson).toBeGreaterThanOrEqual(0);
+    expect(stopBeforeError).toBeGreaterThanOrEqual(0);
+    expect(batch).toContain("say(JSON.stringify(batch))");
+    expect(batch).toContain("printSecureMcpBatch(batch)");
+  });
 });
 
 afterEach(() => {

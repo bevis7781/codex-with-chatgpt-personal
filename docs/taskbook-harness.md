@@ -8,7 +8,7 @@ The `c2c` lines below are shorthand for the repository-local invocation shown
 later; no global installation is required or implied.
 
 ```text
-c2c taskbook inspect
+c2c taskbook inspect --json --compact-json
 c2c taskbook claim --task <id> --body-sha256 <hash> --authorization-id <uuid> --harness <label>
 c2c taskbook finish --task <id> --claim-id <uuid> --authorization-id <uuid> \
   --body-sha256 <hash> --status succeeded --execution-timestamp <timestamp> --output-id <id>
@@ -22,6 +22,12 @@ reviews its body under the ordinary project safety rules, and then calls
 it cannot choose the bound workspace identity, `C2C_STATE_DIR`, task identity,
 sidecar/status destination, or authorization. The CLI never interprets body
 text as an automatic command.
+
+For routine machine inspection, use `taskbook inspect --json --compact-json`.
+Compact JSON keeps the full body in `pending[]` for local review, omits only
+the duplicate `body` property from historical `all[]` items, and preserves
+the existing metadata. Plain `--json` remains backward-compatible; the
+`--compact-json` flag is valid only together with `--json`.
 
 `Read` is optional and never reserves a task. A standalone `Do` authorizes the
 current Harness to check and execute at most one eligible task; it needs no

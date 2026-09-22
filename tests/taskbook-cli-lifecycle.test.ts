@@ -66,6 +66,70 @@ function readOutputIndex(f: Fixture): { items: Array<Record<string, unknown>> } 
 }
 
 describe("Taskbook CLI lifecycle against real execution stores", () => {
+  it("supports compact inspect JSON without claiming or hiding the pending body", () => {
+    const f = fixture("c2c-g2-cli-compact-inspect");
+    const receipt = submit(f);
+
+    const legacy = runCli(f.stateDir, [
+      "taskbook",
+      "inspect",
+      "--workspace",
+      f.projectRoot,
+      "--json",
+    ]);
+    expect(legacy.status).toBe(0);
+    const legacyPayload = JSON.parse(legacy.stdout) as {
+      pending: Array<Record<string, unknown>>;
+      all: Array<Record<string, unknown>>;
+    };
+    expect(legacyPayload.pending[0]?.body).toBe(`body-${TASK_ID}`);
+    expect(legacyPayload.all[0]?.body).toBe(`body-${TASK_ID}`);
+
+    const compact = runCli(f.stateDir, [
+      "taskbook",
+      "inspect",
+      "--workspace",
+      f.projectRoot,
+      "--json",
+      "--compact-json",
+    ]);
+    expect(compact.status).toBe(0);
+    const compactPayload = JSON.parse(compact.stdout) as {
+      ok: boolean;
+      workspaceId: string;
+      pending: Array<Record<string, unknown>>;
+      all: Array<Record<string, unknown>>;
+      unfinished: unknown[];
+    };
+    expect(compactPayload).toMatchObject({ ok: true, workspaceId: f.workspace.id, unfinished: [] });
+    expect(compactPayload.pending[0]?.body).toBe(`body-${TASK_ID}`);
+    expect(compactPayload.all).toHaveLength(1);
+    expect(compactPayload.all[0]).not.toHaveProperty("body");
+    expect(compactPayload.all[0]).toMatchObject({
+      taskId: receipt.taskId,
+      createdAt: expect.any(String),
+      title: "CLI lifecycle",
+      bodySha256: receipt.bodySha256,
+      status: "pending",
+      claimId: null,
+      result: null,
+    });
+
+    const invalid = runCli(f.stateDir, [
+      "taskbook",
+      "inspect",
+      "--workspace",
+      f.projectRoot,
+      "--compact-json",
+    ]);
+    expect(invalid.status).toBe(1);
+    expect(`${invalid.stdout}\n${invalid.stderr}`).toContain("--compact-json requires --json");
+
+    const taskDir = path.join(f.stateDir, "tasks", f.workspace.id);
+    expect(fs.readdirSync(taskDir)).toEqual([`${receipt.taskId}.json`]);
+    expect(readExecutionRecords(f)).toEqual([]);
+  });
+
   it("claims, records, reads back, and finishes through separate CLI processes", () => {
     const f = fixture("c2c-g2-cli-positive");
     const receipt = submit(f);

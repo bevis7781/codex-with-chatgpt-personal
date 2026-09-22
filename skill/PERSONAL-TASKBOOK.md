@@ -32,7 +32,7 @@ $repo = "<ACTUAL_CHECKOUT_PATH>"
 $workspace = (Resolve-Path .).Path
 $env:C2C_STATE_DIR = "<C2C_STATE_DIR>"
 Get-Content (Join-Path $repo "skill\PERSONAL-TASKBOOK.md") -Raw
-node (Join-Path $repo "bin\c2c.js") taskbook inspect --workspace $workspace --json
+node (Join-Path $repo "bin\c2c.js") taskbook inspect --workspace $workspace --json --compact-json
 ```
 
 The `--workspace` value and `C2C_STATE_DIR` must remain the same for
@@ -50,8 +50,10 @@ In the procedure below, `c2c` means the repository-local CLI invocation shown
 above; it does not mean a globally installed executable.
 
 - A standalone user `Read` is optional and is a local view only. Run
-  `c2c taskbook inspect --json` (or the equivalent local CLI) to display the
-  current pending body. It never claims, reserves, or executes a task.
+  `c2c taskbook inspect --json --compact-json` (or the equivalent local CLI)
+  to display the current pending body while omitting duplicate historical
+  bodies from `all[]`. It never claims, reserves, or executes a task. Legacy
+  `--json` remains available unchanged; `--compact-json` requires `--json`.
 - A standalone user `Do` is one authorization event. Create and retain one new
   lowercase UUID v4 `authorizationId` before any claim attempt. It authorizes
   at most one task in the current workspace and is consumed even when the

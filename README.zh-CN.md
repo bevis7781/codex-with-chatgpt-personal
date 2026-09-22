@@ -6,13 +6,17 @@
 
 这是 [`XiaoDuoYa/codex-with-chatgpt`](https://github.com/XiaoDuoYa/codex-with-chatgpt)
 的 **Personal Fork**。它保留上游“ChatGPT 负责推理和审查、本地 Codex Harness
-负责执行”的思路，并加入了受边界约束的 V0.1 Taskbook 工作流。
+负责执行”的思路，同时沿着自己的 Personal 产品方向演进。上游项目仍是本 Fork
+的代码谱系和明确的审查参考，但不决定 Personal 产品方向。本 Fork 加入了受边界
+约束的 V0.1 Taskbook 工作流。
 
 ## 解决什么问题
 
 ChatGPT 付费订阅的网页版额度大量闲置，Codex 却在消耗紧张的 API 额度做
-规划和 Review。本项目把"思考"交给你已付费的网页版 ChatGPT，Codex 只负责
-执行。不用 API Key、不搞逆向代理——官方网页 + 受控 MCP 桥接。
+规划和 Review。本项目把"思考"交给你已付费的网页版 ChatGPT，使用网页订阅而
+不是推理/API 计费 key。Secure MCP 只在本机使用一个受限的 Runtime API key
+（仅 Tunnel Read + Use）；它受 Windows CurrentUser 保护，不进入项目、Taskbook、
+参数或日志，也不会交给模型。不搞逆向代理——官方网页 + 受控 MCP 桥接。
 
 ## 这是什么
 
@@ -64,9 +68,11 @@ Personal 默认使用官方 OpenAI Secure MCP。状态只保存在绑定的 D-02
 不会进入项目、Taskbook、参数、日志或证据。控制面代理必须显式配置且不得带凭据；MCP、OAuth
 和 Harpoon 回环流量保持直连。
 
-`status-all` 只读，`connect-all` 有界且幂等，`disconnect-all` 只停止能证明归属的本地运行时。
-Secure MCP 失败不会静默切换 Cloudflare；Named/Quick 仅保留为显式 legacy 路径。最终重启、
-既有 Chat、双工作区和 `taskbook.submit` 黑盒验收完成前，仍应报告最终验收为 PENDING。
+`status-all` 只读，`connect-all` 有界且幂等，人工重连时提供有界的进度提示；
+`disconnect-all` 只停止能证明归属的本地运行时。Secure MCP 失败不会静默切换
+Cloudflare；Named/Quick 仅保留为显式 legacy 路径。最终黑盒验收已通过：
+多工作区 Secure MCP/connect-all、完整 Windows 重启和既有 Chat 恢复均已核验；
+远程 submit 仍不会执行，直到独立本地 `Do`，且一次独立 `Do` 恰好授权一次已接受的执行。
 
 ## 一段话安装（纯小白专用）
 
@@ -93,22 +99,24 @@ Agent（Codex），然后去倒杯咖啡：
    重启恢复使用 `C2C-Connect-All.cmd`，不使用 Cloudflare 静默兜底。
 ```
 
-**更新**：Skill 每天自动检查一次 GitHub，有新版本会自动更新并继续任务，
-无需任何操作；也可以随时对 Codex 说"更新 Codex with ChatGPT"。
+**更新**：Skill 会在支持的工作流开始时按缓存策略每天最多检查一次 GitHub 更新，
+并在有新版本时自行更新；这是 Skill/工作流检查，不是常驻的 Windows 后台更新服务。
+也可以随时对 Codex 说"更新 Codex with ChatGPT"。
 
-## 安装 → Personal 配置 → 使用（手动版）
+## Personal 配置完成后的使用（手动版）
 
-1. 安装 Skill：在 checkout 中运行 `node bin/c2c.js skill install`，它会同时安装 C2C
-   Skill 和明确的 Personal Taskbook 入口。
-2. 导入批准的本机运行时、设置隐藏 Runtime key、登记一个永久 Tunnel，然后在已绑定的
-   C2C Skill 上对 Codex 说：**"配置"**。Personal 配置不会询问 Cloudflare 临时/固定地址。
-3. 完成 Codex 给出的一次性 Platform/App/OAuth 动作；需要配对码时，等你报告连接器准备授权
+完成上面的安装和一次性接入后：
+
+1. 如果配置还未完成，在已经绑定的 C2C Skill 上对 Codex 说：**"配置"**。
+   Personal 配置不会询问 Cloudflare 临时/固定地址。
+2. 完成 Codex 给出的一次性 Platform/App/OAuth 动作；需要配对码时，等你报告连接器准备授权
    后输入 Codex 新生成的配对码；授权完成后即可正常使用：**"使用 Codex with ChatGPT，帮我实现 XXX。"**
    在已绑定的 Personal Taskbook 对话中，独立 `Read` 只查看，独立 `Do` 最多执行一个
    符合条件的任务后停止。
 
-说明书到此结束。首次授权完成后，重启只需运行 `C2C-Connect-All.cmd`；它只使用本机登记，
-不接受额外参数，也不执行 Taskbook。一次性 Platform/OAuth 动作的字段如下：
+首次授权完成后，重启只需运行 `C2C-Connect-All.cmd`；它只使用本机登记，不接受额外参数，
+也不执行 Taskbook。Personal-first 路径不会自动创建 Project/聊天、驱动浏览器或强制验证连接器。
+一次性 Platform/OAuth 动作的字段如下：
 
 ```
 Name: Codex with ChatGPT · <workspace>
@@ -135,32 +143,31 @@ Personal `配置`、Secure MCP 修复和 `C2C-Connect-All.cmd` 都不会选择�
 ```
              ┌───────────────────────────┐
              │      ChatGPT 网页版       │
-             │   推理 / 规划 / 审查      │
-             └──────────┬──────────▲─────┘
-                        │          │
-               MCP      │          │ Computer Use
-              数据面    │          │ 控制面（消息 < 1 KB）
-                        ▼          │
-             ┌─────────────────────┐
-             │      C2C Bridge     │   仅监听本机回环地址
-             │  受控 MCP           │   OAuth 2.1 + 一次性配对码
-             │  OAuth + 配对       │   Cloudflare Quick Tunnel
-             │  Tunnel 管理        │
-             └──────────┬──────────┘
-                        │  受控访问
-                        ▼
-             ┌─────────────────────┐          ┌─────────────────────┐
-             │     本地工作区      │◀─────────│    Codex Harness    │
-             └─────────────────────┘ 编辑/git │  Shell / 测试 / 修复 │
-                                              └─────────────────────┘
+             │    推理 / 规划 / 审查      │
+             └─────────────┬─────────────┘
+                           │ OpenAI Secure MCP 永久 Tunnel
+                           │（Personal 默认数据面）
+                           ▼
+             ┌───────────────────────────┐
+             │   本机回环 C2C Bridge      │
+             │ 受控 MCP 读取工具 +        │
+             │ 受边界约束的 taskbook.submit│
+             └─────────────┬─────────────┘
+                           │ 受控工作区访问
+                           ▼
+             ┌─────────────────────┐    ┌────────────────────────┐
+             │     本地工作区      │◀──▶│    Codex Harness        │
+             └─────────────────────┘    │ 独立本地 Do → 授权一个  │
+                                        │ Taskbook 任务            │
+                                        └────────────────────────┘
 ```
 
-- **控制面（Computer Use）**：Codex 与 ChatGPT 之间只交换极小的结构化 `[C2C]`
-  状态消息——`INIT → PLAN → EXECUTED → REVIEW → DONE`。绝不粘贴 diff、日志
-  或文件内容。
-- **数据面（MCP）**：ChatGPT 通过现有只读的工作区、diff、测试和证据工具按需
-  读取内容。拥有显式 `taskbook.submit` scope 时，还可以把 `title + body` 提交到
-  工作区范围内的 C2C 任务状态；这不会写入项目文件或运行命令。
+- **Personal 数据面**：ChatGPT 通过 OpenAI Secure MCP 永久 Tunnel 到达本机回环
+  C2C Bridge。Bridge 提供受控的只读工具；拥有显式 `taskbook.submit` scope 时，
+  还可以提交受边界约束的 `title + body`，但不会写入项目文件或运行命令。
+- **执行边界**：本地 Codex Harness 负责项目编辑、git、Shell、测试和修复。独立本地
+  `Do` 最多授权执行一个符合条件的 Taskbook；提交本身永远不会启动执行。
+- **兼容路径**：Cloudflare Named/Quick 仅在明确选择 legacy 操作时保留，不是 Personal 默认。
 - **独立审查**：Codex 执行完毕后，ChatGPT 通过 MCP 亲自检查真实的 git diff
   和测试记录——绝不因为 Codex 说"测试全过"就直接相信。
 
@@ -176,7 +183,8 @@ Personal `配置`、Secure MCP 修复和 `C2C-Connect-All.cmd` 都不会选择�
   （`.env.example` 放行）；`.c2cignore` 可追加自定义规则。
 - **知道 URL 不等于有权限**：公网 MCP 端点强制 OAuth 2.1（PKCE S256、动态
   客户端注册、refresh token 轮换）。无令牌：401；令牌属于别的工作区：403。
-- **模型永远接触不到长期凭据**：唯一会出现在浏览器里的秘密是一次性配对码
+- **凭据留在本机且有边界**：受限 Runtime API key 受 CurrentUser 保护，只用于 Secure MCP
+  Tunnel Read + Use，模型不会收到它。唯一有意输入 ChatGPT 的秘密是一次性配对码
   （5 分钟有效、限 5 次尝试、限速、用后即毁）。
 
 完整威胁模型：[docs/security.md](docs/security.md)
@@ -188,7 +196,7 @@ pnpm install
 pnpm build          # 产出 dist/，暴露 c2c 命令
 pnpm test           # vitest 测试套件（路径安全、OAuth、配对、MCP 端到端）
 
-c2c setup           # 一条命令：Bridge + 隧道 + 配对码
+c2c setup           # 默认 Secure-MCP-first；仅明确需要时加 --legacy-cloudflare
 c2c skill install   # 安装/更新 C2C 与 Personal Taskbook Skill
 c2c sandbox-allow   # 把本地设置目录加入 Codex 沙箱白名单（macOS / Windows）
 c2c status / doctor / pair / unpair / logs / stop
