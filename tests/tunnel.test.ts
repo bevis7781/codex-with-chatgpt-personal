@@ -349,6 +349,53 @@ describe("Cloudflare network-block classification", () => {
     child.emit("exit", 1, null);
     await expect(starting).rejects.toMatchObject({ code: CLOUDFLARE_NETWORK_BLOCKED });
   });
+
+  it("classifies a network block observed before the Named watchdog timeout", async () => {
+    const child = new FakeCloudflaredProcess();
+    const tunnel = new CloudflaredNamedTunnel({
+      tunnelName: "c2c-test",
+      hostname: "c2c-test.example.com",
+      binaryOverride: "cloudflared",
+      startTimeoutMs: 20,
+      spawnImpl: vi.fn(() => child as unknown as ChildProcess),
+    });
+    const starting = tunnel.start(3333);
+    child.stderr.write(
+      "dial tcp 104.16.0.1:443: connectex: An attempt was made to access a socket in a way forbidden by its access permissions.\n"
+    );
+    await expect(starting).rejects.toMatchObject({ code: CLOUDFLARE_NETWORK_BLOCKED });
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("uses an explicit same-context Cloudflare probe to classify a silent watchdog timeout", async () => {
+    const child = new FakeCloudflaredProcess();
+    const networkProbe = vi.fn(async () => true);
+    const tunnel = new CloudflaredNamedTunnel({
+      tunnelName: "c2c-test",
+      hostname: "c2c-test.example.com",
+      binaryOverride: "cloudflared",
+      startTimeoutMs: 20,
+      networkProbe,
+      spawnImpl: vi.fn(() => child as unknown as ChildProcess),
+    });
+    await expect(tunnel.start(3333)).rejects.toMatchObject({ code: CLOUDFLARE_NETWORK_BLOCKED });
+    expect(networkProbe).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an inconclusive silent watchdog timeout out of D-022", async () => {
+    const child = new FakeCloudflaredProcess();
+    const networkProbe = vi.fn(async () => false);
+    const tunnel = new CloudflaredNamedTunnel({
+      tunnelName: "c2c-test",
+      hostname: "c2c-test.example.com",
+      binaryOverride: "cloudflared",
+      startTimeoutMs: 20,
+      networkProbe,
+      spawnImpl: vi.fn(() => child as unknown as ChildProcess),
+    });
+    await expect(tunnel.start(3333)).rejects.toThrow(/timed out/i);
+    expect(cloudflareFailureCode(new Error("Named tunnel start timed out"))).toBeNull();
+  });
 });
 
 describe("named hostname helpers", () => {

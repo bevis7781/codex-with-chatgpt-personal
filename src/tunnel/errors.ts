@@ -41,6 +41,38 @@ export function isCloudflareNetworkBlocked(error: unknown): boolean {
   return cloudflareFailureCode(error) === CLOUDFLARE_NETWORK_BLOCKED;
 }
 
+/**
+ * Probe the public Cloudflare API without credentials. Any HTTP response is
+ * reachable; only explicit local permission or Cloudflare DNS failures count
+ * as a blocked execution context. A generic timeout remains inconclusive.
+ */
+export async function probeCloudflareNetworkBlocked(): Promise<boolean> {
+  try {
+    await fetch("https://api.cloudflare.com/client/v4", { signal: AbortSignal.timeout(5_000) });
+    return false;
+  } catch (error) {
+    if (isCloudflareNetworkBlocked(error)) return true;
+    const pending: unknown[] = [error];
+    const seen = new Set<object>();
+    while (pending.length) {
+      const current = pending.pop();
+      if (!current || typeof current !== "object") continue;
+      if (seen.has(current)) continue;
+      seen.add(current);
+      const value = current as { code?: unknown; message?: unknown; cause?: unknown };
+      if (
+        typeof value.code === "string" &&
+        (value.code === "EACCES" || value.code === "EPERM" || value.code === "ENOTFOUND" || value.code === "EAI_AGAIN")
+      ) {
+        return true;
+      }
+      if (typeof value.message === "string" && isCloudflareNetworkBlockedMessage(value.message)) return true;
+      if (value.cause !== undefined) pending.push(value.cause);
+    }
+    return false;
+  }
+}
+
 export class CloudflareNetworkBlockedError extends Error {
   readonly code = CLOUDFLARE_NETWORK_BLOCKED;
 

@@ -291,6 +291,23 @@ preparation quiet and do not route through the legacy auto/manual choice.
    in-app browser, create or delete connectors, create a Project or chat, send
    a boot prompt, or run any post-connect smoke test on this path. Do not add
    MCP, tunnel, port, or OAuth explanations beyond the required field value.
+
+   **D-022 approved-context recovery:** if `c2c setup -w <workspace> --json`
+   returns `CLOUDFLARE_NETWORK_BLOCKED` together with
+   `approvedContextRecovery.available: true`, do not run ordinary setup again.
+   Ask for one explicit local Harness approval with this scope:
+   `restarting the current workspace's C2C Bridge outside the restricted
+   network sandbox while preserving its existing C2C/Named identity`.
+   If approval is denied, stop `BLOCKED` and leave the current Bridge and all
+   identity unchanged. After approval, run
+   `c2c setup -w <workspace> --approved-context-recovery --json` exactly once
+   in that approved local execution context. This replaces only the diagnosed
+   current-workspace Bridge, keeps the existing Named tunnel/hostname and
+   state-root binding, and retries Named exactly once. Never request
+   Administrator, edit or disable `codex_sandbox_offline_block_outbound`, use
+   Quick, recreate a tunnel/connector, or retry this recovery automatically.
+   A failed single recovery is `BLOCKED` with the evidence returned by the CLI.
+
 4. Wait for the user to report that the connector has been created and is ready
    to authorize. Only then run `c2c pair -w <workspace> --json` to generate a
    fresh one-time code. Give only:

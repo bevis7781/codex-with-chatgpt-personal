@@ -6,6 +6,14 @@ import { fileURLToPath } from "node:url";
 import { startBridge } from "../bridge/server.js";
 import { findBridgeObservation, findLiveBridge, type RuntimeState } from "../bridge/runtime.js";
 import { adminFetch, ensureBridge, stopBridge } from "../process/daemon.js";
+import {
+  D022_APPROVAL_REQUIRED,
+  D022_RECOVERY_BLOCKED,
+  captureApprovedContextCandidate,
+  inspectSetupRecovery,
+  runApprovedContextRecovery,
+  summarizeApprovedContextCandidate,
+} from "../process/approved-context.js";
 import { Workspace } from "../workspace/manager.js";
 import { AuthStore } from "../auth/store.js";
 import { detectTunnelBinaries } from "../tunnel/detect.js";
@@ -207,7 +215,7 @@ interface AdminInfo {
   workspaceRoot: string;
   port: number;
   publicUrl: string | null;
-  tunnel: { running: boolean; url: string | null; provider: string };
+  tunnel: { running: boolean; url: string | null; provider: string; pid?: number };
   tokenCount: number;
   pairingActive: boolean;
   pid: number;
@@ -351,8 +359,13 @@ program
   .description("First-time setup: bridge + secure connection + pairing code")
   .option("-w, --workspace <path>")
   .option("--no-tunnel", "local-only setup (development)")
+  .option(
+    "--approved-context-recovery",
+    "replace only the diagnosed current-workspace Bridge after explicit Harness approval",
+    false
+  )
   .option("--json", "machine-readable output", false)
-  .action(async (opts: { workspace?: string; tunnel: boolean; json: boolean }) => {
+  .action(async (opts: { workspace?: string; tunnel: boolean; approvedContextRecovery: boolean; json: boolean }) => {
     const root = resolveWorkspace(opts.workspace);
     try {
       if (!opts.json) {
@@ -363,8 +376,82 @@ program
       }
       const personalTaskbook = installPersonalTaskbookSkills();
       const sandbox = trySandboxAllow();
+      if (opts.approvedContextRecovery) {
+        if (!opts.tunnel) throw new Error("D-022 approved-context recovery requires the existing Named connection.");
+        const recovery = await runApprovedContextRecovery(root, { approved: true });
+        const payload = { ok: recovery.status === "succeeded", recovery };
+        if (opts.json) {
+          say(JSON.stringify(payload));
+        } else if (recovery.status === "succeeded") {
+          check("已在获批准的本地执行环境中恢复当前项目的固定连接");
+          check(`Named 只重试一次（${recovery.retryCount} 次）`);
+        } else {
+          cross(`D-022 已阻断：${recovery.reason ?? "恢复未完成"}`);
+          process.exitCode = 1;
+        }
+        if (recovery.status !== "succeeded") process.exitCode = 1;
+        return;
+      }
+
+      const recoveryGate = await inspectSetupRecovery(root);
+      if (recoveryGate.action !== "none") {
+        const payload = {
+          ok: false,
+          error: recoveryGate.reason,
+          code: recoveryGate.code ?? D022_RECOVERY_BLOCKED,
+          approvedContextRecovery: recoveryGate.candidate ?? null,
+          sandbox,
+          personalTaskbook: { ok: personalTaskbook.ok, changed: personalTaskbook.changed },
+        };
+        if (opts.json) say(JSON.stringify(payload));
+        else if (recoveryGate.action === "approval_required") {
+          say("当前项目的固定连接需要一次明确的本地批准，才能在正常网络环境中只重启当前项目的连接服务。");
+        } else {
+          cross(`D-022 已阻断：${recoveryGate.reason ?? "无法安全确认恢复目标"}`);
+        }
+        process.exitCode = 1;
+        return;
+      }
+
       const autoProvisionedNamed = await preparePersonalNamedTunnel(root, opts.tunnel);
-      let connection = await ensureBridgeAndTunnel(root, { tunnel: opts.tunnel });
+      let connection;
+      try {
+        connection = await ensureBridgeAndTunnel(root, { tunnel: opts.tunnel });
+      } catch (error) {
+        if (!isCloudflareNetworkBlocked(error)) throw error;
+        try {
+          const candidate = await captureApprovedContextCandidate(root, error);
+          if (candidate) {
+            const summary = summarizeApprovedContextCandidate(candidate);
+            const payload = {
+              ok: false,
+              error: (error as Error).message,
+              code: CLOUDFLARE_NETWORK_BLOCKED,
+              approvedContextRecovery: summary,
+              sandbox,
+              personalTaskbook: { ok: personalTaskbook.ok, changed: personalTaskbook.changed },
+            };
+            if (opts.json) say(JSON.stringify(payload));
+            else {
+              say("固定连接启动时检测到当前本地执行环境受限。现有固定域名和项目身份已保留；需要一次明确批准后再恢复。");
+            }
+            process.exitCode = 1;
+            return;
+          }
+        } catch (captureError) {
+          const payload = {
+            ok: false,
+            error: captureError instanceof Error ? captureError.message : String(captureError),
+            code: D022_RECOVERY_BLOCKED,
+            approvedContextRecovery: null,
+          };
+          if (opts.json) say(JSON.stringify(payload));
+          else cross(`D-022 已阻断：${payload.error}`);
+          process.exitCode = 1;
+          return;
+        }
+        throw error;
+      }
       if (autoProvisionedNamed && connection.info.tunnel.provider !== "cloudflare-named") {
         if (!(await stopBridge(root))) {
           throw new Error("The existing Bridge could not be restarted for the configured Named Tunnel.");

@@ -9,6 +9,8 @@ export interface TunnelStatus {
   url: string | null;
   provider: string;
   detail?: string;
+  /** Child process identity, when the provider owns a local process. */
+  pid?: number;
 }
 
 export interface TunnelDoctorReport {
@@ -17,6 +19,7 @@ export interface TunnelDoctorReport {
   binaryPath: string | null;
   running: boolean;
   url: string | null;
+  pid?: number;
   problems: string[];
 }
 

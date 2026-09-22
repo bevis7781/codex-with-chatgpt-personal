@@ -3,7 +3,12 @@ import readline from "node:readline";
 import type { Logger } from "../logger/index.js";
 import { nullLogger } from "../logger/index.js";
 import { findBinary } from "./detect.js";
-import { classifyCloudflareError, isCloudflareNetworkBlockedMessage } from "./errors.js";
+import {
+  classifyCloudflareError,
+  CloudflareNetworkBlockedError,
+  isCloudflareNetworkBlockedMessage,
+  probeCloudflareNetworkBlocked,
+} from "./errors.js";
 import type { TunnelDoctorReport, TunnelProvider, TunnelStatus } from "./provider.js";
 
 const CONNECTED_RE = /registered tunnel connection/i;
@@ -17,6 +22,7 @@ export interface CloudflaredNamedTunnelOptions {
   logger?: Logger;
   binaryOverride?: string;
   startTimeoutMs?: number;
+  networkProbe?: () => Promise<boolean>;
   spawnImpl?: (
     command: string,
     args: string[],
@@ -47,6 +53,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
   private readonly logger: Logger;
   private readonly binaryOverride?: string;
   private readonly startTimeoutMs: number;
+  private readonly networkProbe: () => Promise<boolean>;
   private readonly spawnImpl: NonNullable<CloudflaredNamedTunnelOptions["spawnImpl"]>;
   private child: ChildProcess | null = null;
   private connected = false;
@@ -66,6 +73,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
     this.logger = opts.logger ?? nullLogger;
     this.binaryOverride = opts.binaryOverride;
     this.startTimeoutMs = opts.startTimeoutMs ?? 45_000;
+    this.networkProbe = opts.networkProbe ?? probeCloudflareNetworkBlocked;
     this.spawnImpl = opts.spawnImpl ?? ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
   }
 
@@ -105,6 +113,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
       let settled = false;
       let output = "";
       let networkBlocked = false;
+      let timeoutDiagnosing = false;
 
       const finish = (fn: () => void): void => {
         if (settled) return;
@@ -113,11 +122,23 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
         fn();
       };
       const timeout = setTimeout(() => {
-        if (!this.connected) {
+        if (this.connected || settled || timeoutDiagnosing) return;
+        timeoutDiagnosing = true;
+        void (async () => {
+          if (!networkBlocked) {
+            networkBlocked = await this.networkProbe().catch(() => false);
+          }
+          if (settled) return;
           this.lastError = "Named tunnel start timed out";
           child.kill("SIGTERM");
-          finish(() => reject(new Error(this.lastError ?? "Named tunnel start timed out")));
-        }
+          finish(() => {
+            if (networkBlocked) {
+              reject(new CloudflareNetworkBlockedError(output || this.lastError || "Cloudflare network access is blocked"));
+              return;
+            }
+            reject(new Error(this.lastError ?? "Named tunnel start timed out"));
+          });
+        })();
       }, this.startTimeoutMs);
 
       const scan = (stream: NodeJS.ReadableStream): void => {
@@ -153,7 +174,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
         this.logger.warn(`cloudflared named tunnel exited with code ${code}`);
         this.child = null;
         this.connected = false;
-        if (wasStarting) {
+        if (wasStarting && !timeoutDiagnosing) {
           finish(() =>
             reject(
               networkBlocked
@@ -189,6 +210,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
       url: this.connected ? this.publicUrl() : null,
       provider: this.name,
       detail: this.lastError ?? undefined,
+      ...(this.child?.pid ? { pid: this.child.pid } : {}),
     };
   }
 
@@ -208,6 +230,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
       binaryPath: bin,
       running: this.child !== null && this.connected,
       url: this.connected ? this.publicUrl() : null,
+      ...(this.child?.pid ? { pid: this.child.pid } : {}),
       problems,
     };
   }
