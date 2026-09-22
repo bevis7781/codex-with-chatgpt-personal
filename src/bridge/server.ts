@@ -17,6 +17,7 @@ import { DEFAULT_HOST, DEFAULT_PORT } from "../config/paths.js";
 import { SERVICE_NAME, VERSION } from "../version.js";
 import { writeRuntimeState, clearRuntimeState, type RuntimeState } from "./runtime.js";
 import { CLOUDFLARE_NETWORK_BLOCKED, cloudflareFailureCode } from "../tunnel/errors.js";
+import { LocalOnlyTunnel } from "../tunnel/local-only.js";
 
 function tunnelForWorkspace(workspaceId: string, logger: Logger): TunnelProvider {
   const binding = namedTunnelBinding(readTunnelState(workspaceId));
@@ -35,6 +36,8 @@ export interface BridgeOptions {
   workspaceRoot: string;
   port?: number;
   host?: string;
+  /** Start without a public provider; Secure MCP owns the outbound tunnel. */
+  localOnly?: boolean;
   logger?: Logger;
   tunnelProvider?: TunnelProvider;
   /** Persist runtime state file (disable in tests). */
@@ -91,7 +94,10 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
 
   const authStore = new AuthStore(workspace.id, { file: opts.authStoreFile });
   const pairing = new PairingManager(workspace.id, { ttlMs: opts.pairingTtlMs });
-  const tunnel = opts.tunnelProvider ?? tunnelForWorkspace(workspace.id, logger);
+  if (opts.localOnly && opts.tunnelProvider && opts.tunnelProvider.name !== "local-only") {
+    throw new Error("LOCAL_ONLY_TUNNEL_PROVIDER_REQUIRED");
+  }
+  const tunnel = opts.tunnelProvider ?? (opts.localOnly ? new LocalOnlyTunnel() : tunnelForWorkspace(workspace.id, logger));
   const adminToken = `c2c_admin_${randomBytes(24).toString("base64url")}`;
 
   let publicBaseUrl: string | null = null;
@@ -111,6 +117,16 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
 
   app.get("/health", (_req, res) => {
     res.json({ service: SERVICE_NAME, version: VERSION, workspaceId: workspace.id, status: "ok" });
+  });
+
+  // Secure MCP's managed runtime uses explicit liveness/readiness names.
+  // These remain minimal, unauthenticated loopback/public health responses and
+  // contain no workspace paths, credentials, or Taskbook data.
+  app.get("/healthz", (_req, res) => {
+    res.json({ service: SERVICE_NAME, version: VERSION, workspaceId: workspace.id, status: "ok" });
+  });
+  app.get("/readyz", (_req, res) => {
+    res.json({ service: SERVICE_NAME, version: VERSION, workspaceId: workspace.id, status: "ready" });
   });
 
   // ---- OAuth + discovery ---------------------------------------------------
@@ -232,6 +248,7 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
       port,
       adminToken,
       publicUrl: publicBaseUrl,
+      ...(opts.localOnly ? { transport: "local-only" as const } : {}),
       startedAt,
     };
     writeRuntimeState(state);

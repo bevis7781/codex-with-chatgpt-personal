@@ -23,10 +23,11 @@ whatever data it needs by itself.
 **Golden rules**
 
 1. NEVER paste file contents, diffs, or logs into ChatGPT. ChatGPT reads them through MCP.
-2. NEVER show the user technical internals (MCP, OAuth, PKCE, tunnel, ports, localhost).
-   Speak in terms of "连接 ChatGPT / 安全连接 / 配对". The only exception is the
-   **guided manual ChatGPT setup** below: expose only the exact settings
-   field labels/values the user must enter, without explaining internals.
+2. NEVER show the user technical internals (MCP, OAuth, PKCE, tunnel, ports, localhost)
+   during ordinary recovery. Speak in terms of "连接 ChatGPT / 安全连接 / 配对".
+   The exceptions are the exact one-time Secure MCP Platform/Tunnel/OAuth handoff
+   and the **guided manual ChatGPT setup** below: expose only the exact settings
+   field labels/values the user must enter, without explaining unrelated internals.
 3. The pairing code is the ONLY credential you may ever type into a browser.
    Never touch OAuth tokens, cookies, or session storage.
 4. If something fails, run `c2c doctor` and repair silently. Only involve the user
@@ -94,6 +95,9 @@ whatever data it needs by itself.
    - `report.bridge` says 状态无法确认: the local bridge may still be running.
      Do not `c2c start`, do not Delete the connector, do not treat it as
      `chatgptRepair`. Wait and run doctor again.
+   - `report.secureMcp.ok` is not true: do not open ChatGPT or revive the
+     Cloudflare path. Use the bounded Secure MCP reason code and stop for the
+     missing local key, Tunnel registration, managed runtime, or identity evidence.
    A ChatGPT-side 401 after a sent message is different: repair then, do not
    treat it as permission to skip this gate next time.
 
@@ -257,60 +261,51 @@ Speak only of 临时地址 / 固定域名 / 登录 Cloudflare.
 
 This is the authoritative first-time path for a supported, already bound
 Personal C2C workspace. When the user says standalone `配置`, keep the local
-preparation quiet and do not route through the legacy auto/manual choice.
+preparation quiet and make OpenAI Secure MCP the default. Cloudflare Named/Quick
+is not an automatic fallback on this path.
 
-1. Detect prerequisites yourself: `node --version` (>= 20), and check
-   `cloudflared`. If cloudflared is missing, install it through the existing
-   platform path; only interrupt for a login, CAPTCHA, 2FA, or explicit consent.
+1. Detect prerequisites yourself: `node --version` (>= 20), and verify the
+   D-021 bound state root. Do not install `cloudflared` for this path.
 2. Prepare this workspace locally:
-   - run `c2c prefs get --json` and read `preferredNamedZone`;
-   - if it is missing, stop with the one-time local setup instruction
-     `c2c prefs set --named-zone <your Cloudflare zone> --json`. Do not ask
-     Quick vs Named or ask for a domain inside this Personal workflow;
    - run `c2c skill install --json` and `c2c sandbox-allow --json`;
-   - run `c2c setup -w <workspace> --json` to start or reuse the bound Bridge
-     and public connection. For an unset workspace, setup automatically provisions Named Tunnel
-     from `preferredNamedZone` and derives the
-     `c2c-<workspace>.<zone>` hostname through the existing logic. If Cloudflare
-     authentication is missing, ask only for that login; do not silently fall
-     back to a temporary address.
-   `skill install` is idempotent and `setup` may repeat it safely. Keep the
-   returned `workspaceName`, `connectorName`, and `mcpUrl`. Intentionally discard
-   the `pairingCode` returned by setup: do not show it or ask the user to save it.
-3. Give the user one compact connector-creation handoff, with exactly these
-   practical fields:
+   - verify the managed official `tunnel-client` v0.0.14 import. If it is
+     absent, stop with the local instruction
+     `c2c secure-mcp runtime import --source <approved local release directory>`;
+   - verify that the one machine-level Restricted Runtime Key is configured
+     through `c2c secure-mcp key set` (input is hidden). Never ask for or print
+     the key in ChatGPT, a Taskbook, a project file, or a command argument;
+   - if this workspace is not registered, ask the user to create/select one
+     permanent OpenAI Tunnel for this ChatGPT workspace, then run
+     `c2c secure-mcp register --tunnel-id tunnel_<32 lowercase hex>`;
+   - run `c2c setup -w <workspace> --json` and, after registration,
+     `c2c connect-all --json`. The command starts/reuses a local-only Bridge,
+     discovers its dynamic loopback port, and attaches the registered stable
+     Tunnel ID through the managed client. It never creates or deletes a
+     remote Tunnel and never claims or executes a Taskbook.
+   `skill install`, registration, and `connect-all` are explicit local
+   operations. A missing key, missing Tunnel ID, failed readiness check, or
+   ambiguous runtime is a bounded stop; never retry indefinitely or silently
+   enter Cloudflare.
+3. Once local Secure MCP readiness is PASS, give the user only the one-time
+   ChatGPT Platform/App/Tunnel/OAuth handoff actually needed. Use the existing
+   connector name and the registered Tunnel selector; do not automate App,
+   Tunnel, OAuth, pairing, or browser actions. If the selected onboarding flow
+   asks for a local OAuth pairing code, run `c2c pair -w <workspace> --json`
+   once only after the user reports that the connector is ready.
 
    ```text
    Name: <connectorName>
    Description: Securely connect ChatGPT to the current Codex workspace for planning and review.
-   Server URL: <mcpUrl>
+   Tunnel: <registered permanent tunnel ID selected in ChatGPT>
    Authentication: OAuth
    ```
 
-   The user creates the connector themselves. Do not open ChatGPT in the
-   in-app browser, create or delete connectors, create a Project or chat, send
-   a boot prompt, or run any post-connect smoke test on this path. Do not add
-   MCP, tunnel, port, or OAuth explanations beyond the required field value.
-
-   **D-022 approved-context recovery:** if `c2c setup -w <workspace> --json`
-   returns `CLOUDFLARE_NETWORK_BLOCKED` together with
-   `approvedContextRecovery.available: true`, do not run ordinary setup again.
-   Ask for one explicit local Harness approval with this scope:
-   `restarting the current workspace's C2C Bridge outside the restricted
-   network sandbox while preserving its existing C2C/Named identity`.
-   If approval is denied, stop `BLOCKED` and leave the current Bridge and all
-   identity unchanged. After approval, run
-   `c2c setup -w <workspace> --approved-context-recovery --json` exactly once
-   in that approved local execution context. This replaces only the diagnosed
-   current-workspace Bridge, keeps the existing Named tunnel/hostname and
-   state-root binding, and retries Named exactly once. Never request
-   Administrator, edit or disable `codex_sandbox_offline_block_outbound`, use
-   Quick, recreate a tunnel/connector, or retry this recovery automatically.
-   A failed single recovery is `BLOCKED` with the evidence returned by the CLI.
-
-4. Wait for the user to report that the connector has been created and is ready
-   to authorize. Only then run `c2c pair -w <workspace> --json` to generate a
-   fresh one-time code. Give only:
+   The user performs the Platform/App/OAuth action themselves. Do not open
+   ChatGPT, create/delete a connector, create a Project or chat, send a boot
+   prompt, or run a post-connect smoke test on this path. Do not use the old
+   Named/Quick repair flow to recover Secure MCP.
+4. Wait for the user to report that the one-time connector/App authorization
+   is ready. Then, only if that flow needs it, provide the fresh pairing code:
 
    ```text
    配对码：<pairingCode>
@@ -322,8 +317,11 @@ preparation quiet and do not route through the legacy auto/manual choice.
 5. When the user reports Connected / authorized / pairing accepted, consider
    setup complete from the user's report. Do not force a connectivity test,
    read a workspace file, send a boot prompt, create a Project/chat, or open
-   ChatGPT to verify it. If the user later reports a real failure, use the
-   existing doctor/repair path on demand.
+   ChatGPT to verify it. Normal reboot recovery is the tracked
+   `C2C-Connect-All.cmd` wrapper, not per-workspace `配置`; it never forwards
+   arbitrary arguments and never executes Taskbooks. If the user later reports
+   a real failure, use `c2c status-all`, `c2c doctor`, or bounded
+   `c2c disconnect-all` on demand.
 6. At completion, give this short Project Instructions routing rule for the
    user to paste if they use a Project; do not create or edit the Project on
    their behalf:

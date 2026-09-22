@@ -46,17 +46,20 @@ describe("Personal Taskbook Skill setup", () => {
     const section = personalFirstSetupSection();
 
     expect(section).toContain("standalone `配置`");
-    expect(section).toContain("c2c prefs get --json");
-    expect(section).toContain("preferredNamedZone");
-    expect(section).toContain("c2c prefs set --named-zone <your Cloudflare zone> --json");
+    expect(section).toContain("D-021 bound state root");
+    expect(section).toContain("c2c secure-mcp runtime import --source <approved local release directory>");
+    expect(section).toContain("c2c secure-mcp key set");
+    expect(section).toContain("c2c secure-mcp register --tunnel-id tunnel_<32 lowercase hex>");
     expect(section).toContain("c2c skill install --json");
     expect(section).toContain("c2c sandbox-allow --json");
     expect(section).toContain("c2c setup -w <workspace> --json");
-    expect(section).toContain("automatically provisions Named Tunnel");
-    expect(section).toContain("do not silently fall");
+    expect(section).toContain("c2c connect-all --json");
+    expect(section).toContain("C2C-Connect-All.cmd");
+    expect(section).toContain("never retry indefinitely");
+    expect(section).toContain("silently\n   enter Cloudflare");
     expect(section).toContain("Name: <connectorName>");
     expect(section).toContain("Description: Securely connect ChatGPT to the current Codex workspace for planning and review.");
-    expect(section).toContain("Server URL: <mcpUrl>");
+    expect(section).toContain("Tunnel: <registered permanent tunnel ID selected in ChatGPT>");
     expect(section).toContain("Authentication: OAuth");
     expect(section).toContain("c2c pair -w <workspace> --json");
     expect(section.indexOf("c2c setup -w <workspace> --json")).toBeLessThan(
@@ -69,6 +72,9 @@ describe("Personal Taskbook Skill setup", () => {
     expect(section).not.toContain("setupChoicePrompt");
     expect(section).not.toContain("Connection choice");
     expect(section).not.toContain("c2c prefs --json");
+    expect(section).not.toContain("preferredNamedZone");
+    expect(section).not.toContain("automatically provisions Named Tunnel");
+    expect(section).not.toContain("Server URL: <mcpUrl>");
     expect(section).not.toContain("chatgpt.com/plugins");
     expect(section).not.toContain("workspace_info");
     expect(section).not.toContain("read_file");

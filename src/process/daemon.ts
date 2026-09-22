@@ -7,8 +7,6 @@ import {
   clearStaleRuntimeState,
   findBridgeObservation,
   findLiveBridge,
-  probeBridge,
-  readRuntimeState,
   type RuntimeState,
 } from "../bridge/runtime.js";
 import {
@@ -41,10 +39,21 @@ export interface EnsureBridgeResult {
  * Ensure a bridge is running for the workspace. Reuses a live instance,
  * otherwise spawns a detached daemon and waits for it to become healthy.
  */
-export async function ensureBridge(workspaceRoot: string, opts: { port?: number } = {}): Promise<EnsureBridgeResult> {
+export async function ensureBridge(
+  workspaceRoot: string,
+  opts: { port?: number; localOnly?: boolean } = {}
+): Promise<EnsureBridgeResult> {
   const workspace = new Workspace(workspaceRoot);
-  const observation = await findBridgeObservation(workspace.id);
-  if (observation.state === "healthy") return { runtime: observation.runtime, spawned: false };
+  const observation = await findBridgeObservation(workspace.id, workspace.root);
+  if (observation.state === "healthy") {
+    if (
+      opts.localOnly &&
+      (observation.runtime.publicUrl !== null || observation.runtime.transport !== "local-only")
+    ) {
+      throw new Error("SECURE_MCP_BRIDGE_FOREIGN_PUBLIC_TRANSPORT");
+    }
+    return { runtime: observation.runtime, spawned: false };
+  }
   if (observation.state === "unknown") {
     throw new Error(
       `Bridge state is uncertain (${observation.reason}); refusing to start another bridge.`
@@ -69,7 +78,14 @@ export async function ensureBridge(workspaceRoot: string, opts: { port?: number 
   const { cmd, args } = cliEntry();
   const child = spawn(
     cmd,
-    [...args, "serve", "--workspace", workspace.root, ...(opts.port ? ["--port", String(opts.port)] : [])],
+    [
+      ...args,
+      "serve",
+      "--workspace",
+      workspace.root,
+      ...(opts.port ? ["--port", String(opts.port)] : []),
+      ...(opts.localOnly ? ["--local-only"] : []),
+    ],
     {
       detached: true,
       stdio: ["ignore", out, out],
@@ -83,7 +99,7 @@ export async function ensureBridge(workspaceRoot: string, opts: { port?: number 
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 300));
-    const runtime = await findLiveBridge(workspace.id);
+    const runtime = await findLiveBridge(workspace.id, workspace.root);
     if (runtime) return { runtime, spawned: true };
     if (child.exitCode !== null && child.exitCode !== 0) {
       throw new Error(`Bridge process exited with code ${child.exitCode}. See ${logFile}`);
@@ -122,19 +138,10 @@ export async function adminFetch<T = unknown>(
 
 export async function stopBridge(workspaceRoot: string): Promise<boolean> {
   const workspace = new Workspace(workspaceRoot);
-  const runtime = readRuntimeState(workspace.id);
-  if (!runtime) return false;
-  const healthy = await probeBridge(runtime.port);
-  if (healthy && healthy.workspaceId === workspace.id) {
-    try {
-      await adminFetch(runtime, "POST", "/admin/shutdown", 5000);
-      return true;
-    } catch {
-      // fall through to kill
-    }
-  }
+  const observation = await findBridgeObservation(workspace.id, workspace.root);
+  if (observation.state !== "healthy") return false;
   try {
-    process.kill(runtime.pid, "SIGTERM");
+    await adminFetch(observation.runtime, "POST", "/admin/shutdown", 5000);
     return true;
   } catch {
     return false;

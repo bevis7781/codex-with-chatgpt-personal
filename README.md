@@ -59,6 +59,30 @@ Remote authority remains intentionally narrow: there is no generic
 project path or workspace. Task submission is explicit, separate from default
 read scopes, and never auto-executes.
 
+## OpenAI Secure MCP Personal transport
+
+The Personal default is the official OpenAI Secure MCP transport. Its state is
+kept below the machine's bound D-021 C2C state root; a workspace registration
+contains only a canonical workspace identity and one stable permanent
+`tunnel_id`. The approved local `tunnel-client` v0.0.14 is imported and
+integrity-checked before launch.
+
+The runtime key is a restricted Runtime API key with Tunnels **Read + Use**
+only. It is entered through the hidden local key command and stored as
+Windows CurrentUser DPAPI ciphertext. It is never a project file, Taskbook,
+argv value, log, or admin key. An explicit credential-free control-plane proxy
+may be configured; loopback MCP and OAuth stay direct.
+
+After onboarding, `C2C-Connect-All.cmd` is the bounded, one-shot reboot
+recovery action. It accepts no workspace, path, process, or arbitrary command
+arguments, operates only on enabled local registrations, and never inspects or
+executes Taskbooks. Secure MCP failures do not silently fall back to
+Cloudflare; the retained Cloudflare Named/Quick path is available only through
+an explicit legacy command.
+
+See [docs/secure-mcp.md](docs/secure-mcp.md) for local setup and the final
+black-box acceptance boundary.
+
 ## Install and setup this fork
 
 1. Clone this repository: `https://github.com/bevis7781/codex-with-chatgpt-personal.git`.
@@ -66,17 +90,15 @@ read scopes, and never auto-executes.
 3. Run `node bin/c2c.js skill install`; it installs the C2C Skill and the
    dedicated Personal Taskbook Skill into the local Codex Skill directory.
    `c2c setup` repeats this step safely for existing installations.
-4. On a new machine, set the local Named Tunnel zone once with
-   `node bin/c2c.js prefs set --named-zone <your Cloudflare zone> --json`.
-   This preference stays on the machine and is not a public project default.
-5. In the already bound C2C Skill context, tell Codex **`配置`**. It quietly
-   prepares the local workspace, then gives you one compact connector form:
-   Name, Description, Server URL, and Authentication = OAuth.
-6. Create the connector yourself. When it is ready to authorize, Codex gives
-   you a fresh one-time pairing code; after you report authorization success it
-   stops and gives the short Project routing instruction. The Personal-first
-   path does not drive the ChatGPT browser, create/delete connectors, create a
-   Project/chat, or force a smoke test.
+4. Import the approved local official runtime once:
+   `node bin/c2c.js secure-mcp runtime import --source <local release directory>`.
+5. Configure the hidden local Runtime API key with
+   `node bin/c2c.js secure-mcp key set`, then register one permanent Tunnel for
+   the current workspace with
+   `node bin/c2c.js secure-mcp register --tunnel-id tunnel_<32 lowercase hex>`.
+6. In the already bound C2C Skill context, tell Codex **`配置`**. It quietly
+   verifies Secure MCP, then gives only the one-time Platform/App/OAuth handoff
+   you still need. After onboarding, run `C2C-Connect-All.cmd` after a reboot.
 7. If Web ChatGPT should submit Taskbooks, explicitly authorize
    `taskbook.submit`. In the installed, explicitly bound Personal Taskbook
    context, standalone `Do` / `Read` then use the local Rule automatically;
@@ -91,23 +113,21 @@ read scopes, and never auto-executes.
 请帮我完整安装并配置 Codex with ChatGPT，全程自动，我是不懂技术的小白，
 所有事情你自己做：
 
-1. 环境自检：需要 git 和 Node.js ≥ 20，缺什么就自动安装
-  （macOS 用 Homebrew，Windows 用 winget），同时安装 cloudflared。
+1. 环境自检：需要 git 和 Node.js ≥ 20；Secure MCP 路径不安装 cloudflared。
 2. 下载：把 https://github.com/bevis7781/codex-with-chatgpt-personal 克隆到
    ~/codex-with-chatgpt-personal（已存在就 git pull 更新）。
 3. 构建：在该目录里执行 corepack pnpm install 和 corepack pnpm build。
 4. 安装 Skill：运行 `node bin/c2c.js skill install --json`。它会自动安装
    C2C Skill 和 Personal Taskbook 入口并填好本地路径，不要手动修改
    `AGENTS.md` 或复制 Rule 文件。
-5. 新机器第一次配置前，运行 `node bin/c2c.js prefs set --named-zone <你的 Cloudflare 域名> --json`
-   保存本机固定域名默认区域；这个偏好只保存在本机，不写入项目或公开源码。
-6. 首次配置：在已经绑定的 C2C Skill 上执行 Personal-first `配置` 流程。
-   本地准备完成后，只把连接器的 Name、Description、Server URL、
-   Authentication = OAuth 四项交给我，我自己创建连接器。
-7. 等我说连接器已创建并准备授权后，再生成新的配对码交给我；授权完成后
-   停止，不要自动打开 ChatGPT、建 Project/chat 或做文件读取测试。
-8. 只有遇到需要我登录（ChatGPT / Cloudflare）、验证码或两步验证时才叫我，
-   而且一次只告诉我一个动作；完成后给我短的 Project 连接器路由说明。
+5. 导入批准的本机 `tunnel-client` v0.0.14，并运行隐藏输入的
+   `node bin/c2c.js secure-mcp key set`；不要把 Runtime key 发给 Agent。
+6. 在 Platform 为当前工作区创建/选择永久 Tunnel，然后登记
+   `node bin/c2c.js secure-mcp register --tunnel-id tunnel_<32 位小写十六进制>`。
+7. 首次配置：在已经绑定的 C2C Skill 上执行 Personal-first `配置` 流程。
+   本地准备完成后，只把仍需你完成的一次性 Platform/App/OAuth 动作交给你。
+8. 等你报告授权完成后停止，不要自动打开 ChatGPT、建 Project/chat 或做文件读取测试；
+   重启恢复使用 `C2C-Connect-All.cmd`，不使用 Cloudflare 静默兜底。
 ```
 
 
@@ -118,28 +138,25 @@ paragraph below, paste it to your coding agent (Codex), and go grab a coffee:
 Please install and configure "Codex with ChatGPT" for me, fully automatically.
 I am a non-technical user — do everything yourself:
 
-1. Check the environment: git and Node.js >= 20 must be available. Install
-   anything missing yourself (macOS: Homebrew, Windows: winget). Also install
-   cloudflared.
+1. Check the environment: git and Node.js >= 20 must be available. The Secure
+   MCP path does not install cloudflared.
 2. Download: clone https://github.com/bevis7781/codex-with-chatgpt-personal into
    ~/codex-with-chatgpt-personal (if it already exists, git pull to update).
 3. Build: inside that folder run `corepack pnpm install` then `corepack pnpm build`.
 4. Install the Skills: run `node bin/c2c.js skill install --json`. This
    installs both the C2C Skill and the Personal Taskbook entry point and fills
    local paths automatically; do not edit `AGENTS.md` or copy the Rule by hand.
-5. On a new machine, save the local Named Tunnel zone once with
-   `node bin/c2c.js prefs set --named-zone <your Cloudflare zone> --json`.
-   Keep this preference local; do not put it in the project or public source.
-6. First-time setup: in the already bound C2C Skill context, run the
-   Personal-first `配置` flow. After local preparation, give me only the
-   connector fields Name, Description, Server URL, and Authentication = OAuth;
-   I will create the connector myself.
-7. After I report that the connector is ready to authorize, generate a fresh
-   pairing code and give it to me. After authorization, stop; do not drive the
-   ChatGPT browser, create a Project/chat, or run a file-read smoke test.
-8. Only interrupt me for logins (ChatGPT / Cloudflare), CAPTCHAs or 2FA, and
-   give me exactly ONE action at a time. Finish with the short Project routing
-   instruction. If anything breaks, use the existing repair path on demand.
+5. Import the approved local `tunnel-client` v0.0.14 release and configure the
+   hidden Runtime API key with `node bin/c2c.js secure-mcp key set`.
+6. Create/select one permanent OpenAI Tunnel for the workspace, then run
+   `node bin/c2c.js secure-mcp register --tunnel-id tunnel_<32 lowercase hex>`.
+7. First-time setup: in the already bound C2C Skill context, run the
+   Personal-first `配置` flow. It gives me only the one-time Platform/App/OAuth
+   action still required; I perform that action myself.
+8. After I report authorization, stop; do not drive the ChatGPT browser, create
+   a Project/chat, or run a file-read smoke test. Reboot recovery is the fixed
+   `C2C-Connect-All.cmd` wrapper. If anything breaks, use the Secure MCP status
+   and bounded repair commands; do not silently switch to Cloudflare.
 ```
 
 
@@ -157,49 +174,39 @@ anytime. / Skill 每天自动检查一次 GitHub，有新版本会自动更新�
 
 1. Install the Skills: from the checkout run `node bin/c2c.js skill install`.
    This installs the C2C Skill and the explicit Personal Taskbook entry point.
-2. On a new machine, set the local Named Tunnel zone once with
-   `c2c prefs set --named-zone <your Cloudflare zone> --json`. In the bound C2C
-   Skill context, tell Codex: **"配置"**. Personal setup does not ask you to
-   choose Quick vs Named or ask for the domain again.
-3. Fill the four connector fields Codex gives you. When you report that the
-   connector is ready to authorize, use the fresh pairing code Codex provides.
+2. Import the approved local runtime, set the hidden Runtime API key, and
+   register one permanent Tunnel ID. In the bound C2C Skill context, tell
+   Codex: **"配置"**. Personal setup does not ask you to choose Cloudflare.
+3. Complete only the one-time Platform/App/OAuth action Codex gives you. When
+   that action is ready to authorize, use the fresh pairing code if requested.
 4. After authorization, use Codex normally: **"Use Codex with ChatGPT to
    implement XXX."** For a bound Personal Taskbook conversation, standalone
    `Read` is view-only and standalone `Do` runs at most one eligible task before
    stopping.
 
-That's the whole manual. You don't need to know what MCP, tunnels, ports or
-localhost are. You create the connector with the four fields shown by Codex;
-Codex handles local preparation, automatically uses the saved Named zone for a
-new workspace, then stops after your authorization report.
+That's the whole manual. After onboarding, run `C2C-Connect-All.cmd` once after
+a reboot; it uses only local registrations and forwards no arguments.
 
 ```
 Name: Codex with ChatGPT · <workspace>
 Description: Securely connect ChatGPT to the current Codex workspace for planning and review.
-Server URL: <the Server URL Codex provides>
+Tunnel: <the registered permanent Tunnel selected in ChatGPT>
 Authentication: OAuth
 
 After authorization, Codex provides the Project routing instruction and stops.
 ```
 
-The only steps that may need you are entering the connector fields, authorizing
-it with the fresh pairing code, and logging into Cloudflare if Named setup
-requires it. Project creation and connector verification are left to you and
-are not forced by the Personal-first setup path.
+The only steps that may need you are selecting the permanent Tunnel and
+authorizing the one-time App/OAuth flow. Project creation and connector
+verification are left to you and are not forced by the Personal-first setup
+path.
 
-### Optional stable hostname
+### Explicit legacy Cloudflare path
 
-The default public address is a temporary Cloudflare URL. It changes when the
-bridge restarts, and Codex repairs ChatGPT by deleting that workspace's
-connector and adding it again.
-
-Personal-first setup automatically uses the locally saved Named Tunnel zone for
-a new workspace and derives a hostname such as `c2c-<project>.your-domain.com`;
-it does not ask you to choose Quick vs Named or ask for the domain again. If
-Cloudflare authentication is required, Codex asks only for that login. A Named
-setup failure is reported truthfully and does not silently switch the Personal
-path to Quick. The explicit `c2c tunnel choose` command remains available for
-legacy or deliberate Quick/Named choices.
+Cloudflare Named/Quick remains available only when an operator deliberately
+selects the legacy setup/`c2c tunnel` commands. It is not selected by Personal
+`配置`, Secure MCP recovery, or `C2C-Connect-All.cmd`, and Secure MCP failures
+never fall back to it.
 
 Credentials stay in the OS app state directory, not in the project.
 
@@ -275,8 +282,8 @@ c2c sandbox-allow   # whitelist the settings dir in Codex (macOS + Windows)
 c2c status / doctor / pair / unpair / logs / stop
 ```
 
-Requirements: Node.js >= 20, git. `cloudflared` for the public connection
-(auto-detected; the Skill installs it for you).
+Requirements: Node.js >= 20, git, and a user-approved local official
+`tunnel-client` v0.0.14 release for Secure MCP. Cloudflare is legacy-only.
 
 Docs: [architecture](docs/architecture.md) · [protocol](docs/protocol.md) ·
 [security](docs/security.md) · [troubleshooting](docs/troubleshooting.md)
@@ -290,7 +297,8 @@ src/
   auth/       OAuth 2.1 (PKCE, DCR, refresh rotation, revocation)
   pairing/    one-time pairing codes (CSPRNG, TTL, rate limits)
   workspace/  path containment, sensitive-file policy, search, git
-  tunnel/     TunnelProvider abstraction + Cloudflare Quick/Named Tunnel
+  secure-mcp/ state, registry, protected key, managed runtime, and connect-all
+  tunnel/     TunnelProvider abstraction + explicit legacy Cloudflare Tunnel
   execution/  execution records for the review loop
   process/    daemon lifecycle
   cli/        the c2c CLI

@@ -41,6 +41,7 @@ import {
 import { isCloudflareHealthProbeNetworkError } from "../tunnel/health.js";
 import { Logger } from "../logger/index.js";
 import { getStateDir } from "../config/paths.js";
+import { assertStateOutsideProject, resolveSecureMcpPaths } from "../secure-mcp/paths.js";
 import { ensureSandboxAllowlist, getCodexConfigPath, isStateDirAllowlisted } from "../config/sandbox-allow.js";
 import { mergeUiPrefs, readUiPrefs, SETUP_MODES, type SetupMode } from "../config/ui-prefs.js";
 import {
@@ -81,6 +82,17 @@ import {
   type TaskbookTerminalStatus,
 } from "../taskbook/index.js";
 import { installPersonalTaskbookSkills } from "../skill/personal-taskbook.js";
+import {
+  importManagedRuntime,
+} from "../secure-mcp/managed-client.js";
+import { readSecureMcpConfig, writeSecureMcpConfig } from "../secure-mcp/config.js";
+import {
+  registerSecureMcpWorkspace,
+  setSecureMcpWorkspaceEnabled,
+} from "../secure-mcp/registry.js";
+import { readHiddenSecret, runtimeKeyStatus, setRuntimeKey } from "../secure-mcp/secrets.js";
+import { redactControlPlaneProxy, validateControlPlaneProxy } from "../secure-mcp/proxy.js";
+import { connectAll, disconnectAll, statusAll, type SecureMcpBatchResult } from "../secure-mcp/runtime.js";
 
 const program = new Command();
 
@@ -271,6 +283,122 @@ async function preparePersonalNamedTunnel(workspaceRoot: string, tunnelEnabled: 
   return true;
 }
 
+function secureMcpBatchPayload(batch: SecureMcpBatchResult): Record<string, unknown> {
+  return {
+    ok: batch.ok,
+    transport: "openai-secure-mcp",
+    secureMcp: batch,
+  };
+}
+
+function printSecureMcpBatch(batch: SecureMcpBatchResult): void {
+  check(`Secure MCP 状态：${batch.ok ? "可用" : "需要处理"}`);
+  check(`已登记工作区：${batch.results.length}`);
+  for (const result of batch.results) {
+    const detail = result.reasonCode ? `（${result.reasonCode}）` : "";
+    if (result.status === "PASS") check(`${result.workspaceId}：PASS${detail}`);
+    else if (result.status === "SKIPPED") say(`· ${result.workspaceId}：SKIPPED${detail}`);
+    else cross(`${result.workspaceId}：${result.status}${detail}`);
+  }
+  if (batch.invalid.length > 0) cross(`发现 ${batch.invalid.length} 条无效 Secure MCP 登记，已保持隔离`);
+}
+
+async function securePersonalSetup(
+  workspaceRoot: string,
+  opts: { connect: boolean; json: boolean }
+): Promise<void> {
+  const workspace = new Workspace(workspaceRoot);
+  const paths = resolveSecureMcpPaths();
+  assertStateOutsideProject(paths, workspace.root);
+  const personalTaskbook = installPersonalTaskbookSkills();
+  const sandbox = trySandboxAllow();
+  if (!opts.connect) {
+    const { runtime } = await ensureBridge(workspace.root, { localOnly: true });
+    const pairing = await adminFetch<PairingResponse>(runtime, "POST", "/admin/pairing");
+    const payload = {
+      ok: true,
+      transport: "openai-secure-mcp",
+      workspaceId: workspace.id,
+      workspaceName: workspace.name,
+      mcpUrl: `http://127.0.0.1:${runtime.port}/mcp`,
+      local: true,
+      pairingCode: pairing.code,
+      pairingExpiresAt: pairing.expiresAt,
+      personalTaskbook: { ok: personalTaskbook.ok, changed: personalTaskbook.changed },
+      sandbox,
+      secureMcp: { configured: false, next: "register a permanent tunnel ID and run c2c connect-all" },
+    };
+    if (opts.json) say(JSON.stringify(payload));
+    else {
+      check(`当前项目已识别（${workspace.name}）`);
+      check("Secure MCP 本地 Bridge 已启动");
+      say("当前是本地准备模式；未启动 Cloudflare，也未创建或修改 OpenAI Tunnel。");
+      say(`本地 MCP：${payload.mcpUrl}`);
+      say(`配对码：${pairing.code}`);
+    }
+    return;
+  }
+
+  const batch = await connectAll();
+  const current = batch.results.find((result) => result.workspaceId === workspace.id);
+  const payload = {
+    ...secureMcpBatchPayload(batch),
+    workspaceId: workspace.id,
+    workspaceName: workspace.name,
+    currentWorkspace: current ?? { status: "BLOCKED", reasonCode: "SECURE_MCP_WORKSPACE_NOT_REGISTERED" },
+    personalTaskbook: { ok: personalTaskbook.ok, changed: personalTaskbook.changed },
+    sandbox,
+  };
+  if (opts.json) {
+    say(JSON.stringify(payload));
+    if (!current || current.status === "BLOCKED" || current.status === "FAIL") process.exitCode = 1;
+    return;
+  }
+  printSecureMcpBatch(batch);
+  if (!current) {
+    say("当前工作区还没有登记永久 Secure MCP Tunnel ID；请先在 OpenAI Platform 创建或选择它，再运行 c2c secure-mcp register。");
+    process.exitCode = 1;
+  } else if (current.status !== "PASS") {
+    say("Secure MCP 尚未就绪；请按上面的稳定原因码处理。不会自动切换到 Cloudflare。");
+    process.exitCode = 1;
+  }
+}
+
+function secureMcpStateExists(): boolean {
+  const root = path.join(getStateDir(), "secure-mcp");
+  const rootStat = fs.lstatSync(root, { throwIfNoEntry: false });
+  if (!rootStat) return false;
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return true;
+  return true;
+}
+
+async function secureDoctor(workspaceRoot: string, opts: { fix: boolean; json: boolean }): Promise<void> {
+  const workspace = new Workspace(workspaceRoot);
+  const batch = opts.fix ? await connectAll() : await statusAll();
+  const current = batch.results.find((result) => result.workspaceId === workspace.id);
+  const report = {
+    node: { ok: Number.parseInt(process.versions.node.split(".")[0], 10) >= 20, detail: `v${process.versions.node}` },
+    workspace: { ok: true, detail: workspace.name },
+    secureMcp: {
+      ok: Boolean(current && current.status === "PASS"),
+      detail: current?.reasonCode ?? (current ? current.status : "SECURE_MCP_WORKSPACE_NOT_REGISTERED"),
+    },
+  };
+  const payload = { report, secureMcp: batch, chatgptRepair: { needed: false }, namedRepair: { needed: false } };
+  if (opts.json) {
+    say(JSON.stringify(payload));
+    if (!report.secureMcp.ok) process.exitCode = 1;
+    return;
+  }
+  say(`${PRODUCT_NAME} Doctor`);
+  report.node.ok ? check(`Node.js（${report.node.detail}）`) : cross(`Node.js：${report.node.detail}`);
+  check(`Workspace（${workspace.name}）`);
+  if (report.secureMcp.ok) check("Secure MCP 已就绪");
+  else cross(`Secure MCP：${report.secureMcp.detail}`);
+  printSecureMcpBatch(batch);
+  if (!report.secureMcp.ok) process.exitCode = 1;
+}
+
 program
   .name("c2c")
   .description(`${PRODUCT_NAME} — ChatGPT thinks. Codex works.`)
@@ -284,11 +412,13 @@ program
   .description("Run the bridge in the foreground (internal)")
   .requiredOption("--workspace <path>")
   .option("--port <port>", "preferred port")
+  .option("--local-only", "run the loopback Bridge without a public provider", false)
   .action(async (opts: { workspace: string; port?: string }) => {
     const logger = new Logger({ name: "bridge", console: true });
     const bridge = await startBridge({
       workspaceRoot: resolveWorkspace(opts.workspace),
       port: opts.port ? parseInt(opts.port, 10) : undefined,
+      localOnly: Boolean((opts as { localOnly?: boolean }).localOnly),
       logger,
     });
     const shutdown = (): void => {
@@ -359,15 +489,26 @@ program
   .description("First-time setup: bridge + secure connection + pairing code")
   .option("-w, --workspace <path>")
   .option("--no-tunnel", "local-only setup (development)")
+  .option("--legacy-cloudflare", "explicitly use the retained legacy Cloudflare path", false)
   .option(
     "--approved-context-recovery",
     "replace only the diagnosed current-workspace Bridge after explicit Harness approval",
     false
   )
   .option("--json", "machine-readable output", false)
-  .action(async (opts: { workspace?: string; tunnel: boolean; approvedContextRecovery: boolean; json: boolean }) => {
+  .action(async (opts: {
+    workspace?: string;
+    tunnel: boolean;
+    legacyCloudflare: boolean;
+    approvedContextRecovery: boolean;
+    json: boolean;
+  }) => {
     const root = resolveWorkspace(opts.workspace);
     try {
+      if (!opts.legacyCloudflare) {
+        await securePersonalSetup(root, { connect: opts.tunnel, json: opts.json });
+        return;
+      }
       if (!opts.json) {
         say(PRODUCT_NAME);
         say("");
@@ -595,6 +736,21 @@ program
   .option("--json", "machine-readable output", false)
   .action(async (opts: { workspace?: string; fix: boolean; json: boolean }) => {
     const root = resolveWorkspace(opts.workspace);
+    let hasSecureState = false;
+    try {
+      hasSecureState = secureMcpStateExists();
+    } catch (error) {
+      handleCliError(error, opts.json);
+      return;
+    }
+    if (hasSecureState) {
+      try {
+        await secureDoctor(root, opts);
+      } catch (error) {
+        handleCliError(error, opts.json);
+      }
+      return;
+    }
     const report: Record<string, { ok: boolean; detail?: string; code?: string }> = {};
     const results: string[] = [];
 
@@ -1268,6 +1424,219 @@ prefsCmd
     }
   });
 
+// ---------------------------------------------------------------- secure-mcp (explicit local management only)
+
+const secureMcpCmd = program
+  .command("secure-mcp")
+  .description("Manage the local OpenAI Secure MCP transport; never inspects or executes Taskbooks");
+
+function outputSecureJson(value: unknown, json: boolean): void {
+  if (json) say(JSON.stringify(value));
+  else say(JSON.stringify(value, null, 2));
+}
+
+const secureRuntimeCmd = secureMcpCmd.command("runtime").description("Import and verify the approved managed tunnel-client");
+
+const importRuntimeAction = (opts: { source: string; json: boolean }): void => {
+  try {
+    const manifest = importManagedRuntime({ sourceDir: path.resolve(opts.source) });
+    const payload = {
+      ok: true,
+      version: manifest.version,
+      commit: manifest.commit,
+      sha256: manifest.sha256,
+      provenance: manifest.sourceProvenance,
+    };
+    outputSecureJson(payload, opts.json);
+  } catch (error) {
+    handleCliError(error, opts.json);
+  }
+};
+
+secureRuntimeCmd
+  .command("import")
+  .description("Copy one explicitly selected local official v0.0.14 release into D-021 state")
+  .requiredOption("--source <directory>", "local approved release directory")
+  .option("--json", "machine-readable output", false)
+  .action(importRuntimeAction);
+
+// A short direct alias is kept for operators who do not need the runtime group.
+secureMcpCmd
+  .command("import")
+  .description("Alias for secure-mcp runtime import")
+  .requiredOption("--source <directory>", "local approved release directory")
+  .option("--json", "machine-readable output", false)
+  .action(importRuntimeAction);
+
+const secureKeyCmd = secureMcpCmd.command("key").description("Set or inspect the CurrentUser-protected runtime key");
+
+async function setSecureRuntimeKey(opts: { json: boolean }): Promise<void> {
+  try {
+    const first = await readHiddenSecret(opts.json ? "" : "Secure MCP runtime key (input hidden): ", {
+      echoNewline: !opts.json,
+    });
+    const second = await readHiddenSecret(opts.json ? "" : "Repeat runtime key (input hidden): ", {
+      echoNewline: !opts.json,
+    });
+    if (!first || first !== second) throw new Error("SECURE_MCP_KEY_CONFIRMATION_MISMATCH");
+    setRuntimeKey(first);
+    const status = runtimeKeyStatus();
+    const payload = { ok: status.configured && status.decryptable, key: status };
+    outputSecureJson(payload, opts.json);
+    if (!payload.ok) process.exitCode = 1;
+  } catch (error) {
+    handleCliError(error, opts.json);
+  }
+}
+
+for (const name of ["set", "replace", "rotate"] as const) {
+  secureKeyCmd.command(name).description(`${name} the local runtime key through a hidden prompt`).option("--json", "machine-readable output", false).action(setSecureRuntimeKey);
+}
+
+secureKeyCmd
+  .command("status")
+  .description("Show whether the protected runtime key is configured and decryptable")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { json: boolean }) => {
+    try {
+      outputSecureJson({ ok: true, key: runtimeKeyStatus() }, opts.json);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+const secureProxyCmd = secureMcpCmd.command("proxy").description("Configure the explicit Secure MCP control-plane proxy");
+
+secureProxyCmd
+  .command("set")
+  .description("Set a credential-free control-plane HTTP(S) proxy")
+  .requiredOption("--url <url>")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { url: string; json: boolean }) => {
+    try {
+      const proxy = validateControlPlaneProxy(opts.url);
+      const config = readSecureMcpConfig();
+      const next = writeSecureMcpConfig({ ...config, controlPlaneProxy: proxy });
+      outputSecureJson({ ok: true, proxy: redactControlPlaneProxy(next.controlPlaneProxy) }, opts.json);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+secureProxyCmd
+  .command("clear")
+  .description("Clear the explicit control-plane proxy")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { json: boolean }) => {
+    try {
+      const next = writeSecureMcpConfig({ ...readSecureMcpConfig(), controlPlaneProxy: null });
+      outputSecureJson({ ok: true, proxy: redactControlPlaneProxy(next.controlPlaneProxy) }, opts.json);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+secureProxyCmd
+  .command("show")
+  .description("Show redacted control-plane proxy state")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { json: boolean }) => {
+    try {
+      const config = readSecureMcpConfig();
+      outputSecureJson({ ok: true, proxy: redactControlPlaneProxy(config.controlPlaneProxy) }, opts.json);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+const registerSecureWorkspaceAction = (opts: {
+  tunnelId: string;
+  workspace?: string;
+  disabled: boolean;
+  json: boolean;
+}): void => {
+  try {
+    const workspaceRoot = resolveWorkspace(opts.workspace);
+    const record = registerSecureMcpWorkspace({
+      workspaceRoot,
+      tunnelId: opts.tunnelId,
+      enabled: !opts.disabled,
+    });
+    outputSecureJson({ ok: true, record }, opts.json);
+  } catch (error) {
+    handleCliError(error, opts.json);
+  }
+};
+
+for (const name of ["register", "update"] as const) {
+  secureMcpCmd
+    .command(name)
+    .description(`${name === "register" ? "Register" : "Update"} the current local workspace with one permanent Tunnel ID`)
+    .requiredOption("--tunnel-id <id>", "tunnel_<32 lowercase hex>")
+    .option("-w, --workspace <path>", "current local workspace (operator-only)")
+    .option("--disabled", "register but leave this workspace disabled", false)
+    .option("--json", "machine-readable output", false)
+    .action(registerSecureWorkspaceAction);
+}
+
+for (const enabled of [true, false] as const) {
+  const name = enabled ? "enable" : "disable";
+  secureMcpCmd
+    .command(name)
+    .description(`${enabled ? "Enable" : "Disable"} the current registered workspace`)
+    .option("-w, --workspace <path>", "current local workspace (operator-only)")
+    .option("--json", "machine-readable output", false)
+    .action((opts: { workspace?: string; json: boolean }) => {
+      try {
+        const record = setSecureMcpWorkspaceEnabled({ workspaceRoot: resolveWorkspace(opts.workspace), enabled });
+        outputSecureJson({ ok: true, record }, opts.json);
+      } catch (error) {
+        handleCliError(error, opts.json);
+      }
+    });
+}
+
+async function runSecureBatchCommand(
+  kind: "status" | "connect" | "disconnect",
+  json: boolean
+): Promise<void> {
+  try {
+    const batch = kind === "status" ? await statusAll() : kind === "connect" ? await connectAll() : await disconnectAll();
+    if (json) {
+      say(JSON.stringify(batch));
+    } else {
+      printSecureMcpBatch(batch);
+    }
+    if (!batch.ok) process.exitCode = 1;
+  } catch (error) {
+    handleCliError(error, json);
+  }
+}
+
+for (const [name, kind] of [
+  ["status-all", "status"],
+  ["connect-all", "connect"],
+  ["disconnect-all", "disconnect"],
+] as const) {
+  secureMcpCmd
+    .command(name)
+    .description(`${kind === "status" ? "Read" : kind === "connect" ? "Connect" : "Disconnect"} all registered Secure MCP workspaces`)
+    .option("--json", "machine-readable output", false)
+    .action((opts: { json: boolean }) => runSecureBatchCommand(kind, opts.json));
+}
+
+for (const [name, kind] of [
+  ["status-all", "status"],
+  ["connect-all", "connect"],
+  ["disconnect-all", "disconnect"],
+] as const) {
+  program
+    .command(name)
+    .description(`Fixed local Secure MCP ${name} command`)
+    .option("--json", "machine-readable output", false)
+    .action((opts: { json: boolean }) => runSecureBatchCommand(kind, opts.json));
+}
+
 // ---------------------------------------------------------------- taskbook (local Harness lifecycle only)
 
 const taskbookCmd = program
@@ -1692,11 +2061,15 @@ tunnelCmd
 
 function handleCliError(error: unknown, json: boolean): void {
   const message = error instanceof Error ? error.message : String(error);
+  const code = error && typeof error === "object" && "code" in error && typeof (error as { code?: unknown }).code === "string"
+    ? (error as { code: string }).code
+    : undefined;
   if (json) {
     say(
       JSON.stringify({
         ok: false,
         error: message,
+        ...(code ? { code } : {}),
         ...(isCloudflareNetworkBlocked(error) ? { code: CLOUDFLARE_NETWORK_BLOCKED } : {}),
       })
     );
@@ -1709,7 +2082,7 @@ function handleCliError(error: unknown, json: boolean): void {
     say("macOS 用户可运行：brew install cloudflared");
     say("完成后再试一次即可。");
   } else {
-    cross(message);
+    cross(code ? `${code}：${message}` : message);
   }
   process.exitCode = 1;
 }
