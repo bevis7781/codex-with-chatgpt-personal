@@ -110,6 +110,19 @@ describe("Personal Taskbook Skill setup", () => {
     expect(installedPersonal).toContain(PERSONAL_TASKBOOK_MANAGED_MARKER);
     expect(installedPersonal).toContain("Do not use this skill for");
     expect(installedPersonal).toContain("unbound workspaces");
+
+    for (const installed of [installedRule, installedPersonal]) {
+      expect(installed).toContain("## Host-context-dependent operations");
+      expect(installed).toContain("Run the exact operation once in the ordinary sandbox");
+      expect(installed).toContain("sandbox network/connectivity");
+      expect(installed).toContain("host-context network may differ");
+      expect(installed).toContain("remote semantic rejections");
+      expect(installed).toContain("per-operation host-context approval path");
+      expect(installed).toContain("same executable and arguments");
+      expect(installed).toContain("no wrapper shell, compound command, script");
+      expect(installed).toContain("stop without retrying");
+      expect(installed).toContain("does not expose shell/exec to Web ChatGPT");
+    }
   });
 
   it("is idempotent and updates only files owned by this fork", () => {
