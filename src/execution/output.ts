@@ -24,21 +24,22 @@ interface OutputIndex {
   items: ExecutionOutputMeta[];
 }
 
-function outputDir(workspaceId: string): string {
-  return ensureDir(path.join(getStateDir(), "execution-outputs", workspaceId));
+function outputDir(workspaceId: string, create = false): string {
+  const directory = path.join(getStateDir(), "execution-outputs", workspaceId);
+  return create ? ensureDir(directory) : directory;
 }
 
-function indexFile(workspaceId: string): string {
-  return path.join(outputDir(workspaceId), "index.json");
+function indexFile(workspaceId: string, create = false): string {
+  return path.join(outputDir(workspaceId, create), "index.json");
 }
 
 function bodyFile(workspaceId: string, id: number): string {
   return path.join(outputDir(workspaceId), "bodies", `${id}.txt`);
 }
 
-function readIndex(workspaceId: string): OutputIndex {
+function readIndex(workspaceId: string, create = false): OutputIndex {
   return (
-    readJsonIfExists<OutputIndex>(indexFile(workspaceId)) ?? {
+    readJsonIfExists<OutputIndex>(indexFile(workspaceId, create)) ?? {
       nextId: 1,
       items: [],
     }
@@ -46,7 +47,7 @@ function readIndex(workspaceId: string): OutputIndex {
 }
 
 function writeIndex(workspaceId: string, index: OutputIndex): void {
-  writeSecureJson(indexFile(workspaceId), index);
+  writeSecureJson(indexFile(workspaceId, true), index);
 }
 
 export interface SaveOutputInput {
@@ -59,7 +60,7 @@ export interface SaveOutputInput {
 
 export function saveExecutionOutput(workspaceId: string, input: SaveOutputInput): ExecutionOutputMeta {
   const sanitized = sanitizeExecutionOutput(input.raw);
-  const index = readIndex(workspaceId);
+  const index = readIndex(workspaceId, true);
   const id = index.nextId;
   const timestamp = new Date().toISOString();
   const allowed = sanitized.allowed;

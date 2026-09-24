@@ -27,6 +27,10 @@ function recordsFile(workspaceId: string): string {
   return path.join(dir, `${workspaceId}.jsonl`);
 }
 
+function existingRecordsFile(workspaceId: string): string {
+  return path.join(getStateDir(), "executions", `${workspaceId}.jsonl`);
+}
+
 export function appendExecutionRecord(workspaceId: string, record: ExecutionRecord): void {
   const file = recordsFile(workspaceId);
   fs.appendFileSync(file, JSON.stringify(executionRecordSchema.parse(record)) + "\n", { mode: 0o600 });
@@ -47,6 +51,57 @@ export function readExecutionRecords(workspaceId: string, limit = 10): Execution
     }
   }
   return records.reverse();
+}
+
+/** Bounded, read-only full snapshot for strict Taskbook recovery evidence. */
+export function readExecutionRecordSnapshot(
+  workspaceId: string,
+  maxBytes = 4 * 1024 * 1024
+): { complete: true; records: ExecutionRecord[] } | { complete: false; records: [] } {
+  const file = existingRecordsFile(workspaceId);
+  let before: fs.Stats;
+  try {
+    before = fs.lstatSync(file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { complete: true, records: [] };
+    return { complete: false, records: [] };
+  }
+  if (!before.isFile() || before.size > maxBytes) return { complete: false, records: [] };
+
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    return { complete: false, records: [] };
+  }
+  let after: fs.Stats;
+  try {
+    after = fs.lstatSync(file);
+  } catch {
+    return { complete: false, records: [] };
+  }
+  if (
+    !after.isFile() ||
+    before.size !== after.size ||
+    before.mtimeMs !== after.mtimeMs ||
+    Buffer.byteLength(text, "utf8") !== after.size ||
+    (text.length > 0 && !text.endsWith("\n"))
+  ) {
+    return { complete: false, records: [] };
+  }
+  const records: ExecutionRecord[] = [];
+  for (const line of text.split("\n").filter(Boolean)) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      return { complete: false, records: [] };
+    }
+    const record = executionRecordSchema.safeParse(parsed);
+    if (!record.success) return { complete: false, records: [] };
+    records.push(record.data);
+  }
+  return { complete: true, records };
 }
 
 export function latestExecutionRecord(workspaceId: string): ExecutionRecord | null {

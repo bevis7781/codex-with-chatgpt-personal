@@ -7,6 +7,7 @@ import {
   isCanonicalUtcTimestamp,
 } from "./envelope.js";
 import { TaskbookError } from "./errors.js";
+import { MAX_SUPPORTED_TASKBOOK_RESULT_VERSION } from "./lifecycle-capability.js";
 
 /** Terminal states for one claimed Taskbook. */
 export type TaskbookTerminalStatus = "succeeded" | "failed" | "blocked";
@@ -35,6 +36,34 @@ export interface TaskbookResultRecord {
   outputId: number | null;
 }
 
+export type RecoveryTerminalOrigin = "recovery-closeout" | "recovery-abandon";
+export type RecoveryEvidenceState = "complete-linked-execution" | "no-linked-evidence" | "incomplete-or-ambiguous";
+export type RecoveryReasonCode =
+  | "recovered-succeeded"
+  | "recovered-failed"
+  | "recovered-blocked"
+  | "no-linked-evidence"
+  | "incomplete-linked-evidence"
+  | "ambiguous-linked-evidence";
+
+/** Strict additive representation; historical normal Result V1 remains unchanged. */
+export interface TaskbookRecoveryResultRecord {
+  version: 2;
+  taskId: string;
+  bodySha256: string;
+  claimId: string;
+  status: TaskbookTerminalStatus;
+  finishedAt: string;
+  recoveryAuthorizationId: string;
+  terminalOrigin: RecoveryTerminalOrigin;
+  evidenceState: RecoveryEvidenceState;
+  executionTimestamp: string | null;
+  outputId: number | null;
+  reasonCode: RecoveryReasonCode;
+}
+
+export type AnyTaskbookResultRecord = TaskbookResultRecord | TaskbookRecoveryResultRecord;
+
 const CLAIM_KEYS = [
   "version",
   "taskId",
@@ -55,8 +84,23 @@ const RESULT_KEYS = [
   "executionTimestamp",
   "outputId",
 ] as const;
+const RECOVERY_RESULT_KEYS = [
+  "version",
+  "taskId",
+  "bodySha256",
+  "claimId",
+  "status",
+  "finishedAt",
+  "recoveryAuthorizationId",
+  "terminalOrigin",
+  "evidenceState",
+  "executionTimestamp",
+  "outputId",
+  "reasonCode",
+] as const;
 const CLAIM_KEY_SET: ReadonlySet<string> = new Set(CLAIM_KEYS);
 const RESULT_KEY_SET: ReadonlySet<string> = new Set(RESULT_KEYS);
+const RECOVERY_RESULT_KEY_SET: ReadonlySet<string> = new Set(RECOVERY_RESULT_KEYS);
 const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_HARNESS_BYTES = 128;
 
@@ -131,10 +175,26 @@ export function parseClaimRecord(text: string): TaskbookClaimRecord {
 }
 
 /** Parse and strictly validate one terminal result sidecar. */
-export function parseResultRecord(text: string): TaskbookResultRecord {
+export function parseResultRecord(text: string): AnyTaskbookResultRecord {
   const record = parseObject(text, MAX_LIFECYCLE_BYTES, "RESULT");
-  assertExactKeys(record, RESULT_KEYS, RESULT_KEY_SET, "RESULT");
-  if (record.version !== LIFECYCLE_VERSION) malformed("RESULT_VERSION");
+  if (
+    Number.isSafeInteger(record.version) &&
+    (record.version as number) > MAX_SUPPORTED_TASKBOOK_RESULT_VERSION
+  ) {
+    throw new TaskbookError("UPGRADE_REQUIRED", undefined, "UNSUPPORTED_LIFECYCLE_RESULT_VERSION");
+  }
+  if (record.version === LIFECYCLE_VERSION) {
+    assertExactKeys(record, RESULT_KEYS, RESULT_KEY_SET, "RESULT");
+    return parseNormalResultRecord(record);
+  }
+  if (record.version === 2) {
+    assertExactKeys(record, RECOVERY_RESULT_KEYS, RECOVERY_RESULT_KEY_SET, "RECOVERY_RESULT");
+    return parseRecoveryResultRecord(record);
+  }
+  malformed("RESULT_VERSION");
+}
+
+function parseNormalResultRecord(record: Record<string, unknown>): TaskbookResultRecord {
   assertUuid(record.taskId, "RESULT_TASK_ID");
   assertHash(record.bodySha256, "RESULT_BODY_HASH");
   assertUuid(record.claimId, "RESULT_CLAIM_ID");
@@ -161,6 +221,81 @@ export function parseResultRecord(text: string): TaskbookResultRecord {
   };
 }
 
+function parseRecoveryResultRecord(record: Record<string, unknown>): TaskbookRecoveryResultRecord {
+  assertUuid(record.taskId, "RECOVERY_RESULT_TASK_ID");
+  assertHash(record.bodySha256, "RECOVERY_RESULT_BODY_HASH");
+  assertUuid(record.claimId, "RECOVERY_RESULT_CLAIM_ID");
+  if (record.status !== "succeeded" && record.status !== "failed" && record.status !== "blocked") {
+    malformed("RECOVERY_RESULT_STATUS");
+  }
+  assertTimestamp(record.finishedAt, "RECOVERY_RESULT_FINISHED_AT");
+  assertUuid(record.recoveryAuthorizationId, "RECOVERY_RESULT_AUTHORIZATION_ID");
+  if (record.terminalOrigin !== "recovery-closeout" && record.terminalOrigin !== "recovery-abandon") {
+    malformed("RECOVERY_RESULT_ORIGIN");
+  }
+  if (
+    record.evidenceState !== "complete-linked-execution" &&
+    record.evidenceState !== "no-linked-evidence" &&
+    record.evidenceState !== "incomplete-or-ambiguous"
+  ) {
+    malformed("RECOVERY_RESULT_EVIDENCE_STATE");
+  }
+  if (record.executionTimestamp !== null) assertTimestamp(record.executionTimestamp, "RECOVERY_RESULT_EXECUTION_TIMESTAMP");
+  if (
+    record.outputId !== null &&
+    (typeof record.outputId !== "number" || !Number.isSafeInteger(record.outputId) || record.outputId <= 0)
+  ) {
+    malformed("RECOVERY_RESULT_OUTPUT_ID");
+  }
+  const validReasonCodes: readonly RecoveryReasonCode[] = [
+    "recovered-succeeded",
+    "recovered-failed",
+    "recovered-blocked",
+    "no-linked-evidence",
+    "incomplete-linked-evidence",
+    "ambiguous-linked-evidence",
+  ];
+  if (typeof record.reasonCode !== "string" || !validReasonCodes.includes(record.reasonCode as RecoveryReasonCode)) {
+    malformed("RECOVERY_RESULT_REASON_CODE");
+  }
+
+  if (record.terminalOrigin === "recovery-closeout") {
+    if (
+      record.evidenceState !== "complete-linked-execution" ||
+      record.executionTimestamp === null ||
+      record.reasonCode !== `recovered-${record.status}` ||
+      (record.status === "succeeded" && record.outputId === null)
+    ) {
+      malformed("RECOVERY_RESULT_CLOSEOUT_RELATION");
+    }
+  } else if (
+    record.status !== "blocked" ||
+    record.evidenceState === "complete-linked-execution" ||
+    record.executionTimestamp !== null ||
+    record.outputId !== null ||
+    (record.evidenceState === "no-linked-evidence"
+      ? record.reasonCode !== "no-linked-evidence"
+      : record.reasonCode !== "incomplete-linked-evidence" && record.reasonCode !== "ambiguous-linked-evidence")
+  ) {
+    malformed("RECOVERY_RESULT_ABANDON_RELATION");
+  }
+
+  return {
+    version: 2,
+    taskId: record.taskId,
+    bodySha256: record.bodySha256,
+    claimId: record.claimId,
+    status: record.status,
+    finishedAt: record.finishedAt,
+    recoveryAuthorizationId: record.recoveryAuthorizationId,
+    terminalOrigin: record.terminalOrigin,
+    evidenceState: record.evidenceState,
+    executionTimestamp: record.executionTimestamp,
+    outputId: record.outputId,
+    reasonCode: record.reasonCode as RecoveryReasonCode,
+  };
+}
+
 /** Serialize a claim with its frozen key order and byte bound. */
 export function serializeClaimRecord(record: TaskbookClaimRecord): string {
   const text = JSON.stringify({
@@ -178,17 +313,33 @@ export function serializeClaimRecord(record: TaskbookClaimRecord): string {
 }
 
 /** Serialize a terminal result with its frozen key order and byte bound. */
-export function serializeResultRecord(record: TaskbookResultRecord): string {
-  const text = JSON.stringify({
-    version: record.version,
-    taskId: record.taskId,
-    bodySha256: record.bodySha256,
-    claimId: record.claimId,
-    status: record.status,
-    finishedAt: record.finishedAt,
-    executionTimestamp: record.executionTimestamp,
-    outputId: record.outputId,
-  });
+export function serializeResultRecord(record: AnyTaskbookResultRecord): string {
+  const text =
+    record.version === 1
+      ? JSON.stringify({
+          version: record.version,
+          taskId: record.taskId,
+          bodySha256: record.bodySha256,
+          claimId: record.claimId,
+          status: record.status,
+          finishedAt: record.finishedAt,
+          executionTimestamp: record.executionTimestamp,
+          outputId: record.outputId,
+        })
+      : JSON.stringify({
+          version: record.version,
+          taskId: record.taskId,
+          bodySha256: record.bodySha256,
+          claimId: record.claimId,
+          status: record.status,
+          finishedAt: record.finishedAt,
+          recoveryAuthorizationId: record.recoveryAuthorizationId,
+          terminalOrigin: record.terminalOrigin,
+          evidenceState: record.evidenceState,
+          executionTimestamp: record.executionTimestamp,
+          outputId: record.outputId,
+          reasonCode: record.reasonCode,
+        });
   assertSerializedSize(text, "RESULT");
   return text;
 }

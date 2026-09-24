@@ -4,6 +4,7 @@ import { emitTaskbookAudit } from "./audit.js";
 import {
   MAX_BODY_BYTES,
   MAX_INVENTORY_ENTRIES,
+  MAX_LIFECYCLE_BYTES,
   MAX_PENDING,
   MAX_TOTAL_STORAGE_BYTES,
   MAX_TITLE_BYTES,
@@ -13,7 +14,7 @@ import {
 import { createEnvelope, bodySha256, generateTaskId, serializeEnvelope, taskbookFileName, utf8Bytes } from "./envelope.js";
 import { TaskbookError, toTaskbookError } from "./errors.js";
 import { createNewFileExclusive } from "./create.js";
-import { inventoryWorkspaceTaskRoot } from "./inventory.js";
+import { inventoryTaskbookState } from "./inventory.js";
 import { nodeTaskbookIo, type TaskbookIo } from "./io.js";
 import { acquireTaskbookLock, releaseTaskbookLock } from "./lock.js";
 import { resolveTaskbookPaths } from "./paths.js";
@@ -163,14 +164,19 @@ export function submitTaskbook(
     acquireTaskbookLock(io, paths.lockPath);
     lockAcquired = true;
 
-    const inventory = inventoryWorkspaceTaskRoot(io, paths.workspaceTaskRoot);
-    if (inventory.entries >= MAX_INVENTORY_ENTRIES) {
+    const inventory = inventoryTaskbookState(io, paths.workspaceTaskRoot);
+    if (inventory.unfinishedClaims.length > 1) {
+      throw new TaskbookError("UNFINISHED_TASK", undefined, "MULTIPLE_UNFINISHED_CLAIMS");
+    }
+    const terminalReserveEntries = inventory.unfinishedClaims.length > 0 ? 1 : 0;
+    const terminalReserveBytes = terminalReserveEntries > 0 ? MAX_LIFECYCLE_BYTES : 0;
+    if (inventory.entries + 1 + terminalReserveEntries > MAX_INVENTORY_ENTRIES) {
       throw new TaskbookError("LIMIT_EXCEEDED", undefined, "ENTRY_CAP");
     }
     if (inventory.pending >= MAX_PENDING) {
       throw new TaskbookError("LIMIT_EXCEEDED", undefined, "PENDING_CAP");
     }
-    if (inventory.storageBytes + prepared.proposedBytes > MAX_TOTAL_STORAGE_BYTES) {
+    if (inventory.storageBytes + prepared.proposedBytes + terminalReserveBytes > MAX_TOTAL_STORAGE_BYTES) {
       throw new TaskbookError("LIMIT_EXCEEDED", undefined, "STORAGE_CAP");
     }
 

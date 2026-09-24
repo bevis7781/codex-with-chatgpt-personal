@@ -6,12 +6,14 @@ import {
   findBridgeObservation,
   findLiveBridge,
   probeBridge,
+  readBoundTaskbookLifecycleCapability,
   readRuntimeState,
   writeRuntimeState,
   type RuntimeState,
 } from "../src/bridge/runtime.js";
 import { ensureBridge, stopBridge } from "../src/process/daemon.js";
 import { SERVICE_NAME, VERSION } from "../src/version.js";
+import { TASKBOOK_LIFECYCLE_CAPABILITY } from "../src/taskbook/lifecycle-capability.js";
 import { Workspace } from "../src/workspace/manager.js";
 import { cleanup, isolateStateDir, makeTmpDir, write } from "./helpers.js";
 
@@ -146,6 +148,63 @@ describe("findBridgeObservation", () => {
       expect(observation.state).toBe("healthy");
       expect(await findLiveBridge(bridge.workspace.id)).not.toBeNull();
     } finally {
+      await bridge.close();
+    }
+  });
+
+  it("advertises Result V1/V2 support with authenticated runtime provenance", async () => {
+    const { bridge, runtime } = await startObservedBridge("obs-lifecycle-capability");
+    try {
+      const response = await fetch(`http://127.0.0.1:${runtime.port}/admin/info`, {
+        headers: { authorization: `Bearer ${runtime.adminToken}` },
+      });
+      expect(response.ok).toBe(true);
+      const info = await response.json() as Record<string, unknown>;
+      expect(info.taskbookLifecycle).toEqual(TASKBOOK_LIFECYCLE_CAPABILITY);
+
+      const proof = await readBoundTaskbookLifecycleCapability(runtime.workspaceId, runtime.workspaceRoot);
+      expect(proof).toMatchObject({
+        evidence: "authenticated-loopback-admin-info",
+        runtime: {
+          service: SERVICE_NAME,
+          version: VERSION,
+          workspaceId: runtime.workspaceId,
+          workspaceRoot: runtime.workspaceRoot,
+          pid: runtime.pid,
+          port: runtime.port,
+          startedAt: runtime.startedAt,
+        },
+        capability: TASKBOOK_LIFECYCLE_CAPABILITY,
+      });
+      expect(await readBoundTaskbookLifecycleCapability(runtime.workspaceId, path.parse(runtime.workspaceRoot).root)).toBeNull();
+      const foreignStateRoot = makeTmpDir("obs-foreign-state-root");
+      dirs.push(foreignStateRoot);
+      expect(await readBoundTaskbookLifecycleCapability(runtime.workspaceId, runtime.workspaceRoot, foreignStateRoot)).toBeNull();
+    } finally {
+      await bridge.close();
+    }
+  });
+
+  it("treats a bound Bridge without a capability advertisement as an old reader", async () => {
+    const { bridge, runtime } = await startObservedBridge("obs-lifecycle-capability-old-reader");
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = requestUrl(input);
+      const response = await realFetch(input, init);
+      if (url.pathname !== "/admin/info" || !response.ok) return response;
+      const info = await response.json() as Record<string, unknown>;
+      delete info.taskbookLifecycle;
+      return new Response(JSON.stringify(info), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    try {
+      const proof = await readBoundTaskbookLifecycleCapability(runtime.workspaceId, runtime.workspaceRoot);
+      expect(proof).not.toBeNull();
+      expect(proof?.capability).toBeNull();
+    } finally {
+      fetchSpy.mockRestore();
       await bridge.close();
     }
   });

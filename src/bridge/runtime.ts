@@ -4,6 +4,10 @@ import { randomBytes } from "node:crypto";
 import { ensureDir, getStateDir } from "../config/paths.js";
 import { SERVICE_NAME, VERSION } from "../version.js";
 import { Workspace } from "../workspace/manager.js";
+import {
+  parseTaskbookLifecycleCapabilityAdvertisement,
+  type BoundTaskbookLifecycleCapability,
+} from "../taskbook/lifecycle-capability.js";
 
 /**
  * Runtime state file: how the CLI/Skill finds a running bridge for a
@@ -179,6 +183,7 @@ interface AdminInfoPayload {
   pid?: unknown;
   port?: unknown;
   startedAt?: unknown;
+  taskbookLifecycle?: unknown;
 }
 
 const MAX_ADMIN_INFO_BYTES = 16 * 1024;
@@ -298,6 +303,43 @@ export async function findBridgeObservation(workspaceId: string, expectedWorkspa
 export async function findLiveBridge(workspaceId: string, expectedWorkspaceRoot?: string): Promise<RuntimeState | null> {
   const observation = await findBridgeObservation(workspaceId, expectedWorkspaceRoot);
   return observation.state === "healthy" ? observation.runtime : null;
+}
+
+/**
+ * Read lifecycle-reader support from the exact Bridge bound in this state root.
+ * A missing advertisement is a verified old/unknown capability, not V2 support.
+ */
+export async function readBoundTaskbookLifecycleCapability(
+  workspaceId: string,
+  expectedWorkspaceRoot: string,
+  expectedStateRoot = getStateDir()
+): Promise<BoundTaskbookLifecycleCapability | null> {
+  if (!sameWorkspaceRoot(getStateDir(), expectedStateRoot)) return null;
+  const observation = await findBridgeObservation(workspaceId, expectedWorkspaceRoot);
+  if (observation.state !== "healthy") return null;
+
+  const { runtime } = observation;
+  const health = await probeBridge(runtime.port);
+  if (!health || health.workspaceId !== workspaceId) return null;
+  const info = await probeBridgeAdminInfo(runtime);
+  if (!info || !matchesAuthenticatedRuntimeIdentity(runtime, health, info)) return null;
+  const currentRuntime = readRuntimeState(workspaceId);
+  if (!currentRuntime || !sameRuntimeState(currentRuntime, runtime)) return null;
+
+  return {
+    evidence: "authenticated-loopback-admin-info",
+    observedAt: new Date().toISOString(),
+    runtime: {
+      service: info.service as string,
+      version: info.version as string,
+      workspaceId: info.workspaceId as string,
+      workspaceRoot: info.workspaceRoot as string,
+      pid: info.pid as number,
+      port: info.port as number,
+      startedAt: info.startedAt as string,
+    },
+    capability: parseTaskbookLifecycleCapabilityAdvertisement(info.taskbookLifecycle),
+  };
 }
 
 function sameWorkspaceRoot(left: string, right: string): boolean {

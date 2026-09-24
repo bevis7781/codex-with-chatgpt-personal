@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
   MAX_INVENTORY_ENTRIES,
+  MAX_LIFECYCLE_BYTES,
   MAX_PENDING,
   MAX_TOTAL_STORAGE_BYTES,
   TASKBOOK_STATUS_PENDING,
@@ -28,10 +29,17 @@ import {
   parseClaimRecord,
   serializeClaimRecord,
   serializeResultRecord,
+  type AnyTaskbookResultRecord,
+  type TaskbookRecoveryResultRecord,
+  type RecoveryReasonCode,
   type TaskbookClaimRecord,
   type TaskbookResultRecord,
   type TaskbookTerminalStatus,
 } from "./lifecycle-records.js";
+import {
+  boundCapabilitySupportsResultVersion,
+  type BoundTaskbookLifecycleCapability,
+} from "./lifecycle-capability.js";
 
 export interface TaskbookLocalContext {
   /** Locally derived workspace identity; never supplied by remote Taskbook text. */
@@ -57,7 +65,7 @@ export interface TaskbookReadItem {
   bodySha256: string;
   status: typeof TASKBOOK_STATUS_PENDING | "claimed" | TaskbookTerminalStatus;
   claimId: string | null;
-  result: TaskbookResultRecord | null;
+  result: AnyTaskbookResultRecord | null;
 }
 
 export interface TaskbookInspectResult {
@@ -164,6 +172,33 @@ export interface TaskbookFinishInput extends TaskbookLocalContext {
   evidence: TaskbookExecutionEvidence;
 }
 
+export interface TaskbookLinkedRecordInput extends TaskbookLocalContext {
+  taskId: string;
+  bodySha256: string;
+  claimId: string;
+  authorizationId: string;
+}
+
+export type TaskbookRecoveryEvidence =
+  | { classification: "complete"; status: TaskbookTerminalStatus; executionTimestamp: string; outputId: number | null }
+  | { classification: "none" }
+  | { classification: "incomplete" }
+  | { classification: "ambiguous" };
+
+export interface TaskbookRecoverInput extends TaskbookLocalContext {
+  recoveryAuthorizationId: string;
+}
+
+export type TaskbookLifecycleCapabilityReader = (expectedBinding: {
+  workspaceId: string;
+  workspaceRoot: string;
+  stateRoot: string;
+}) => Promise<BoundTaskbookLifecycleCapability | null>;
+
+export type TaskbookRecoverOutcome =
+  | { outcome: "no-target" }
+  | { outcome: "recovered"; result: TaskbookRecoveryResultRecord };
+
 export function newTaskbookAuthorizationId(): string {
   return randomUUID();
 }
@@ -172,11 +207,12 @@ export function newTaskbookAuthorizationId(): string {
 export function parseTaskbookCommand(
   value: unknown,
   options: { personalTaskbookContext?: boolean } = {}
-): "Do" | "Read" | null {
+): "Do" | "Read" | "Recover" | null {
   if (options.personalTaskbookContext === false || typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
   if (normalized === "do") return "Do";
   if (normalized === "read") return "Read";
+  if (normalized === "recover") return "Recover";
   return null;
 }
 
@@ -206,6 +242,32 @@ function runLocked<T>(io: TaskbookIo, paths: TaskbookPaths, operation: () => T):
   let failure: unknown;
   try {
     result = operation();
+  } catch (error) {
+    failure = error;
+  }
+  try {
+    releaseTaskbookLock(io, paths.lockPath);
+  } catch {
+    // A successful mutation remains the durable evidence. Leaving the lock in
+    // place forces later local investigation; no stale lock is removed here.
+  }
+  if (failure !== undefined) throw failure;
+  return result as T;
+}
+
+async function runLockedAsync<T>(io: TaskbookIo, paths: TaskbookPaths, operation: () => Promise<T>): Promise<T> {
+  try {
+    acquireTaskbookLock(io, paths.lockPath);
+  } catch (error) {
+    if (error instanceof TaskbookError && error.detail === "LOCK_HELD") {
+      throw new TaskbookError("BUSY", undefined, "LOCK_HELD");
+    }
+    throw error;
+  }
+  let result: T | undefined;
+  let failure: unknown;
+  try {
+    result = await operation();
   } catch (error) {
     failure = error;
   }
@@ -322,8 +384,8 @@ function validateEvidence(input: TaskbookFinishInput): void {
   }
 }
 
-function checkCapacity(inventory: DetailedTaskbookInventory, additionalBytes: number): void {
-  if (inventory.entries >= MAX_INVENTORY_ENTRIES) {
+function checkCapacity(inventory: DetailedTaskbookInventory, additionalBytes: number, additionalEntries = 1): void {
+  if (inventory.entries + additionalEntries > MAX_INVENTORY_ENTRIES) {
     throw new TaskbookError("LIMIT_EXCEEDED", undefined, "ENTRY_CAP");
   }
   if (inventory.storageBytes + additionalBytes > MAX_TOTAL_STORAGE_BYTES) {
@@ -393,7 +455,7 @@ export function claimTaskbook(input: TaskbookClaimInput): TaskbookClaimedTask {
       claimedAt: new Date().toISOString(),
     };
     const serialized = serializeClaimRecord(claim);
-    checkCapacity(inventory, Buffer.byteLength(serialized, "utf8"));
+    checkCapacity(inventory, Buffer.byteLength(serialized, "utf8") + MAX_LIFECYCLE_BYTES, 2);
     const file = path.join(paths.workspaceTaskRoot, taskbookClaimFileName(selected.taskId));
     if (!createNewFileExclusive(io, file, serialized)) {
       throw new TaskbookError("STORAGE_ERROR", undefined, "CLAIM_EXISTS");
@@ -405,6 +467,132 @@ export function claimTaskbook(input: TaskbookClaimInput): TaskbookClaimedTask {
       bodySha256: selected.bodySha256,
       claim,
     };
+  });
+}
+
+/**
+ * Persist a Taskbook-linked execution/output pair while holding the same
+ * workspace lifecycle lock used by claim, finish, and Recover.
+ */
+export function recordTaskbookExecution<T>(input: TaskbookLinkedRecordInput, persist: () => T): T {
+  validateUuid(input.taskId, "TASK_ID");
+  validateUuid(input.claimId, "CLAIM_ID");
+  validateUuid(input.authorizationId, "AUTHORIZATION_ID");
+  validateBodyHash(input.bodySha256, "BODY_HASH");
+  const io = contextIo(input);
+  const paths = pathsFor(input, io);
+  return runLocked(io, paths, () => {
+    const inventory = inventoryTaskbookState(io, paths.workspaceTaskRoot);
+    rejectCorruptState(inventory);
+    const task = inventory.tasks.find((candidate) => candidate.taskId === input.taskId);
+    if (!task) throw new TaskbookError("TASK_NOT_FOUND", undefined, "TASK_ID");
+    if (!task.claim || task.result) {
+      throw new TaskbookError("TASK_NOT_ELIGIBLE", undefined, "TERMINAL_OR_UNCLAIMED");
+    }
+    if (
+      task.claim.claimId !== input.claimId ||
+      task.claim.authorizationId !== input.authorizationId ||
+      task.claim.bodySha256 !== input.bodySha256 ||
+      task.bodySha256 !== input.bodySha256
+    ) {
+      throw new TaskbookError("EVIDENCE_INVALID", undefined, "CLAIM_MISMATCH");
+    }
+    return persist();
+  });
+}
+
+/** Resolve one existing unfinished claim from durable linked evidence, or abandon it as blocked. */
+export async function recoverTaskbook(
+  input: TaskbookRecoverInput,
+  inspectEvidence: (task: TaskbookLifecycleTask) => TaskbookRecoveryEvidence,
+  readCapability: TaskbookLifecycleCapabilityReader
+): Promise<TaskbookRecoverOutcome> {
+  validateUuid(input.recoveryAuthorizationId, "RECOVERY_AUTHORIZATION_ID");
+  const io = contextIo(input);
+  const paths = pathsFor(input, io);
+  return runLockedAsync(io, paths, async () => {
+    const inventory = inventoryTaskbookState(io, paths.workspaceTaskRoot);
+    rejectCorruptState(inventory);
+    const task = inventory.unfinishedClaims[0];
+    if (!task?.claim) return { outcome: "no-target" };
+    if (inventory.authorizationIds.has(input.recoveryAuthorizationId)) {
+      throw new TaskbookError("AUTHORIZATION_REUSED", undefined, "RECOVERY_AUTHORIZATION_ID");
+    }
+
+    const evidence = inspectEvidence(task);
+    const finishedAt = new Date().toISOString();
+    let result: TaskbookRecoveryResultRecord;
+    if (evidence.classification === "complete") {
+      if (!isCanonicalUtcTimestamp(evidence.executionTimestamp)) {
+        throw new TaskbookError("EVIDENCE_INVALID", undefined, "RECOVERY_EXECUTION_TIMESTAMP");
+      }
+      if (
+        evidence.outputId !== null &&
+        (!Number.isSafeInteger(evidence.outputId) || evidence.outputId <= 0)
+      ) {
+        throw new TaskbookError("EVIDENCE_INVALID", undefined, "RECOVERY_OUTPUT_ID");
+      }
+      result = {
+        version: 2,
+        taskId: task.taskId,
+        bodySha256: task.bodySha256,
+        claimId: task.claim.claimId,
+        status: evidence.status,
+        finishedAt,
+        recoveryAuthorizationId: input.recoveryAuthorizationId,
+        terminalOrigin: "recovery-closeout",
+        evidenceState: "complete-linked-execution",
+        executionTimestamp: evidence.executionTimestamp,
+        outputId: evidence.outputId,
+        reasonCode: `recovered-${evidence.status}` as RecoveryReasonCode,
+      };
+    } else {
+      const noEvidence = evidence.classification === "none";
+      result = {
+        version: 2,
+        taskId: task.taskId,
+        bodySha256: task.bodySha256,
+        claimId: task.claim.claimId,
+        status: "blocked",
+        finishedAt,
+        recoveryAuthorizationId: input.recoveryAuthorizationId,
+        terminalOrigin: "recovery-abandon",
+        evidenceState: noEvidence ? "no-linked-evidence" : "incomplete-or-ambiguous",
+        executionTimestamp: null,
+        outputId: null,
+        reasonCode:
+          evidence.classification === "none"
+            ? "no-linked-evidence"
+            : evidence.classification === "ambiguous"
+              ? "ambiguous-linked-evidence"
+              : "incomplete-linked-evidence",
+      };
+    }
+    const serialized = serializeResultRecord(result);
+    checkCapacity(inventory, Buffer.byteLength(serialized, "utf8"));
+    let capability: BoundTaskbookLifecycleCapability | null;
+    try {
+      capability = await readCapability({
+        workspaceId: input.workspaceId,
+        workspaceRoot: paths.projectRoot,
+        stateRoot: paths.stateRoot,
+      });
+    } catch {
+      throw new TaskbookError("UPGRADE_REQUIRED", undefined, "BRIDGE_LIFECYCLE_CAPABILITY_UNVERIFIED");
+    }
+    if (
+      !boundCapabilitySupportsResultVersion(capability, result.version, {
+        workspaceId: input.workspaceId,
+        workspaceRoot: input.projectRoot,
+      })
+    ) {
+      throw new TaskbookError("UPGRADE_REQUIRED", undefined, "UNSUPPORTED_LIFECYCLE_RESULT_VERSION");
+    }
+    const file = path.join(paths.workspaceTaskRoot, taskbookResultFileName(task.taskId));
+    if (!createNewFileExclusive(io, file, serialized)) {
+      throw new TaskbookError("STORAGE_ERROR", undefined, "RESULT_EXISTS");
+    }
+    return { outcome: "recovered", result };
   });
 }
 

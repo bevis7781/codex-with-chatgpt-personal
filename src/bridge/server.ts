@@ -18,6 +18,7 @@ import { SERVICE_NAME, VERSION } from "../version.js";
 import { writeRuntimeState, clearRuntimeState, type RuntimeState } from "./runtime.js";
 import { CLOUDFLARE_NETWORK_BLOCKED, cloudflareFailureCode } from "../tunnel/errors.js";
 import { LocalOnlyTunnel } from "../tunnel/local-only.js";
+import { TASKBOOK_LIFECYCLE_CAPABILITY } from "../taskbook/lifecycle-capability.js";
 
 function tunnelForWorkspace(workspaceId: string, logger: Logger): TunnelProvider {
   const binding = namedTunnelBinding(readTunnelState(workspaceId));
@@ -189,6 +190,7 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
       pairingActive: pairing.hasActiveSession(),
       pid: process.pid,
       startedAt,
+      taskbookLifecycle: TASKBOOK_LIFECYCLE_CAPABILITY,
     });
   });
 

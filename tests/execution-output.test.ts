@@ -92,4 +92,17 @@ describe("execution output store", () => {
     expect(item.command).not.toMatch(/c2c_at_/);
     expect(item.command).toContain("[REDACTED]");
   });
+
+  it.each([7, 42])("preserves a supplied exact exit code of %i", (exitCode) => {
+    dirs.push(isolateStateDir());
+    const item = saveExecutionOutput("ws1", {
+      command: "exact-terminal verified child",
+      raw: `child exited ${exitCode}`,
+      exitCode,
+    });
+    expect(item.exitCode).toBe(exitCode);
+    const read = readExecutionOutput("ws1", item.id);
+    expect(read.ok).toBe(true);
+    if (read.ok) expect(read.meta.exitCode).toBe(exitCode);
+  });
 });

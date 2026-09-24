@@ -4,7 +4,12 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { startBridge } from "../bridge/server.js";
-import { findBridgeObservation, findLiveBridge, type RuntimeState } from "../bridge/runtime.js";
+import {
+  findBridgeObservation,
+  findLiveBridge,
+  readBoundTaskbookLifecycleCapability,
+  type RuntimeState,
+} from "../bridge/runtime.js";
 import { adminFetch, ensureBridge, stopBridge } from "../process/daemon.js";
 import {
   D022_APPROVAL_REQUIRED,
@@ -78,9 +83,13 @@ import {
   encodeTaskbookEvidenceNote,
   finishTaskbook,
   inspectTaskbooks,
+  inspectTaskbookRecoveryEvidence,
+  recoverTaskbook,
+  recordTaskbookExecution,
   type TaskbookExecutionEvidence,
   type TaskbookTerminalStatus,
 } from "../taskbook/index.js";
+import type { TaskbookLifecycleCapabilityAdvertisement } from "../taskbook/lifecycle-capability.js";
 import { installPersonalTaskbookSkills } from "../skill/personal-taskbook.js";
 import {
   importManagedRuntime,
@@ -222,6 +231,8 @@ interface PairingResponse {
 }
 
 interface AdminInfo {
+  service: string;
+  version: string;
   workspaceId: string;
   workspaceName: string;
   workspaceRoot: string;
@@ -232,6 +243,7 @@ interface AdminInfo {
   pairingActive: boolean;
   pid: number;
   startedAt: string;
+  taskbookLifecycle?: TaskbookLifecycleCapabilityAdvertisement;
 }
 
 async function ensureBridgeAndTunnel(
@@ -1753,6 +1765,36 @@ taskbookCmd
     }
   );
 
+taskbookCmd
+  .command("recover")
+  .description("Resolve one unfinished local Taskbook claim from linked evidence or close it as blocked")
+  .requiredOption("--recovery-authorization-id <id>", "fresh local ID retained for this one Recover event")
+  .option("-w, --workspace <path>")
+  .option("--json", "machine-readable output", false)
+  .action(async (opts: { workspace?: string; recoveryAuthorizationId: string; json: boolean }) => {
+    try {
+      const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      const recovered = await recoverTaskbook(
+        {
+          workspaceId: workspace.id,
+          projectRoot: workspace.root,
+          recoveryAuthorizationId: opts.recoveryAuthorizationId,
+        },
+        (task) => inspectTaskbookRecoveryEvidence(workspace.id, task),
+        (binding) => readBoundTaskbookLifecycleCapability(binding.workspaceId, binding.workspaceRoot, binding.stateRoot)
+      );
+      if (opts.json) {
+        say(JSON.stringify({ ok: true, ...recovered }));
+      } else if (recovered.outcome === "no-target") {
+        say("当前没有可恢复的未完成 claim。");
+      } else {
+        check(`Recover 已完成：${recovered.result.status}（${recovered.result.reasonCode}）`);
+      }
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
 function readTaskbookEvidence(
   workspaceId: string,
   taskId: string,
@@ -1942,34 +1984,51 @@ program
           })
         : undefined;
       const recordNotes = [evidenceNote, opts.notes].filter((value): value is string => Boolean(value)).join(" | ").slice(0, 400);
-      let outputId: number | undefined;
-      let outputAvailable = false;
       const rawOutput =
         opts.outputFile !== undefined
           ? readCappedUtf8(path.resolve(opts.outputFile), MAX_RECORD_OUTPUT_READ)
           : opts.output;
-      if (opts.command && rawOutput !== undefined) {
-        const savedOutput = saveExecutionOutput(workspace.id, {
-          command: opts.command,
-          raw: rawOutput,
-          exitCode: opts.exitCode ?? null,
+      const persist = (): { outputId: number | undefined; outputAvailable: boolean } => {
+        let outputId: number | undefined;
+        let outputAvailable = false;
+        if (opts.command && rawOutput !== undefined) {
+          const savedOutput = saveExecutionOutput(workspace.id, {
+            command: opts.command,
+            raw: rawOutput,
+            exitCode: opts.exitCode ?? null,
+            taskId: opts.task,
+            iteration: opts.iteration,
+          });
+          outputId = savedOutput.id;
+          outputAvailable = savedOutput.allowed;
+        }
+        appendExecutionRecord(workspace.id, {
           taskId: opts.task,
           iteration: opts.iteration,
+          changedFiles: changed,
+          tests: opts.tests ?? null,
+          exitStatus: opts.exitStatus,
+          timestamp: new Date().toISOString(),
+          notes: recordNotes || undefined,
+          outputId,
+          outputAvailable,
         });
-        outputId = savedOutput.id;
-        outputAvailable = savedOutput.allowed;
-      }
-      appendExecutionRecord(workspace.id, {
-        taskId: opts.task,
-        iteration: opts.iteration,
-        changedFiles: changed,
-        tests: opts.tests ?? null,
-        exitStatus: opts.exitStatus,
-        timestamp: new Date().toISOString(),
-        notes: recordNotes || undefined,
-        outputId,
-        outputAvailable,
-      });
+        return { outputId, outputAvailable };
+      };
+      const persisted = linkageComplete
+        ? recordTaskbookExecution(
+            {
+              workspaceId: workspace.id,
+              projectRoot: workspace.root,
+              taskId: opts.task,
+              bodySha256: opts.taskbookBodySha256!,
+              claimId: opts.taskbookClaimId!,
+              authorizationId: opts.taskbookAuthorizationId!,
+            },
+            persist
+          )
+        : persist();
+      const { outputId, outputAvailable } = persisted;
       if (outputId !== undefined && !outputAvailable) check("已记录执行摘要（输出未对 ChatGPT 开放）");
       else if (outputId !== undefined) check("已记录执行摘要与输出");
       else check("已记录执行摘要");

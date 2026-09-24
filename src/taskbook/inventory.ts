@@ -11,8 +11,8 @@ import {
 import {
   parseClaimRecord,
   parseResultRecord,
+  type AnyTaskbookResultRecord,
   type TaskbookClaimRecord,
-  type TaskbookResultRecord,
 } from "./lifecycle-records.js";
 import { TaskbookError, errnoCodeOf } from "./errors.js";
 import { lstatStrict, readTextStrict } from "./fsutil.js";
@@ -31,7 +31,7 @@ export interface TaskbookLifecycleTask {
   envelope: TaskbookEnvelope;
   bodySha256: string;
   claim: TaskbookClaimRecord | null;
-  result: TaskbookResultRecord | null;
+  result: AnyTaskbookResultRecord | null;
 }
 
 /** Complete state information used by local inspect/claim/finish operations. */
@@ -57,7 +57,7 @@ interface ClaimEntry {
 
 interface ResultEntry {
   taskId: string;
-  result: TaskbookResultRecord;
+  result: AnyTaskbookResultRecord;
 }
 
 function assertStable(io: TaskbookIo, absolute: string, before: ReturnType<TaskbookIo["lstat"]>): void {
@@ -89,7 +89,8 @@ export function inventoryTaskbookState(io: TaskbookIo, workspaceTaskRoot: string
   const claims = new Map<string, ClaimEntry>();
   const results = new Map<string, ResultEntry>();
   const invalidTaskIds = new Set<string>();
-  const authorizationIds = new Set<string>();
+  const claimAuthorizationIds = new Set<string>();
+  const recoveryAuthorizationIds = new Set<string>();
 
   for (const name of names) {
     const absolute = path.join(workspaceTaskRoot, name);
@@ -140,7 +141,10 @@ export function inventoryTaskbookState(io: TaskbookIo, workspaceTaskRoot: string
         throw new TaskbookError("STORAGE_ERROR", undefined, "MISMATCHED_CLAIM");
       }
       claims.set(claimTaskId, { taskId: claimTaskId, claim });
-      authorizationIds.add(claim.authorizationId);
+      if (claimAuthorizationIds.has(claim.authorizationId)) {
+        throw new TaskbookError("STORAGE_ERROR", undefined, "DUPLICATE_AUTHORIZATION_ID");
+      }
+      claimAuthorizationIds.add(claim.authorizationId);
       continue;
     }
 
@@ -150,22 +154,35 @@ export function inventoryTaskbookState(io: TaskbookIo, workspaceTaskRoot: string
       }
       const text = readTextStrict(io, absolute);
       assertStable(io, absolute, before);
-      let result: TaskbookResultRecord;
+      let result: AnyTaskbookResultRecord;
       try {
         result = parseResultRecord(text);
-      } catch {
+      } catch (error) {
+        if (error instanceof TaskbookError && error.code === "UPGRADE_REQUIRED") throw error;
         throw new TaskbookError("STORAGE_ERROR", undefined, "MALFORMED_RESULT");
       }
       if (result.taskId !== resultTaskId || results.has(resultTaskId)) {
         throw new TaskbookError("STORAGE_ERROR", undefined, "MISMATCHED_RESULT");
       }
       results.set(resultTaskId, { taskId: resultTaskId, result });
+      if (result.version === 2) {
+        if (recoveryAuthorizationIds.has(result.recoveryAuthorizationId)) {
+          throw new TaskbookError("STORAGE_ERROR", undefined, "DUPLICATE_AUTHORIZATION_ID");
+        }
+        recoveryAuthorizationIds.add(result.recoveryAuthorizationId);
+      }
       continue;
     }
 
     // Unknown/non-canonical regular files are bounded accounting entries. They
     // are deliberately not promoted to lifecycle state or silently followed.
     assertStable(io, absolute, before);
+  }
+
+  for (const authorizationId of recoveryAuthorizationIds) {
+    if (claimAuthorizationIds.has(authorizationId)) {
+      throw new TaskbookError("STORAGE_ERROR", undefined, "DUPLICATE_AUTHORIZATION_ID");
+    }
   }
 
   const tasks: TaskbookLifecycleTask[] = [];
@@ -210,7 +227,7 @@ export function inventoryTaskbookState(io: TaskbookIo, workspaceTaskRoot: string
     tasks,
     invalidTaskIds: [...invalidTaskIds].sort(),
     unfinishedClaims,
-    authorizationIds,
+    authorizationIds: new Set([...claimAuthorizationIds, ...recoveryAuthorizationIds]),
   };
 }
 

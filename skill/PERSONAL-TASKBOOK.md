@@ -1,7 +1,7 @@
 ---
 name: codex-with-chatgpt-personal-taskbook
 description: >
-  Use when the user sends an exact standalone Do or Read after normal C2C
+  Use when the user sends an exact standalone Do, Read, or Recover after normal C2C
   setup has installed this skill for the current local workspace and the
   conversation is operating as its Personal Taskbook Harness. Before any
   claim, verify the current workspace binding. Do not use this skill for
@@ -21,7 +21,7 @@ dedicated skill; its presence alone is not authorization.
 ## Enable this rule locally
 
 The Harness must explicitly load this installed file before handling a Personal
-Taskbook `Do` or `Read`. Merely seeing the words in an unrelated conversation
+Taskbook `Do`, `Read`, or `Recover`. Merely seeing the words in an unrelated conversation
 does not enable it. The standard setup fills the two placeholders below with
 the trusted checkout and bridge state directory; do not ask the user to fill
 them in or discover them manually. Use the checkout's local tools; do not
@@ -36,7 +36,7 @@ node (Join-Path $repo "bin\c2c.js") taskbook inspect --workspace $workspace --js
 ```
 
 The `--workspace` value and `C2C_STATE_DIR` must remain the same for
-`inspect`, `claim`, `record`, and `finish`, and must identify the workspace and
+`inspect`, `claim`, `record`, `finish`, and `recover`, and must identify the workspace and
 state root already bound by the bridge. Do not use `npm -g`, `pnpm -g`, or a
 separate global `c2c` installation.
 
@@ -58,6 +58,12 @@ above; it does not mean a globally installed executable.
   lowercase UUID v4 `authorizationId` before any claim attempt. It authorizes
   at most one task in the current workspace and is consumed even when the
   queue is empty or the attempt stops with an error.
+- A standalone user `Recover` is a separate local authorization event. It means
+  the user explicitly attests that the original Harness/session/process for
+  the one unfinished claim can no longer continue. Create and retain one fresh
+  lowercase UUID v4 `recoveryAuthorizationId` before the recovery attempt. It
+  authorizes at most one lifecycle resolution and never authorizes task
+  execution, a new claim, or another workspace.
 
 ## Do procedure
 
@@ -108,6 +114,74 @@ above; it does not mean a globally installed executable.
 7. Stop after this one task. A lost reply or crash after claim leaves the task
    claimed; do not invent a new authorization ID and rerun it.
 
+## Pinned local exact-terminal evidence exception
+
+The sole helper exception for exact child terminal evidence is this checkout's
+`scripts/exact-terminal.mjs`. It is local-only and does not add an execution
+tool to Web ChatGPT or MCP. Independently hash the helper before use and require
+the reviewed SHA-256 `a420fc0a3b9b0e4074448856e95243c3f7f7ca0c831986d815227e37457618dd`; the matching
+`scripts/exact-terminal.pin.json` is a local pin record, not authority to accept
+an unreviewed helper change. A pin mismatch stops before target launch.
+
+For each operation, construct one immutable version-2 spec from trusted local
+Harness state. Bind the exact `workspaceId`, `taskId`, `claimId`, positive
+`iteration`, and a fresh random 128-bit nonce, along with an absolute target
+executable, argv array, cwd, a sorted explicit allowlist of relevant environment
+names and the digest of their current values, output limits and timeout. The
+Taskbook body cannot choose the binding or nonce. Only allowlisted environment
+values reach the child; no whole-environment inheritance or digest. The helper
+launches the target directly with `shell:false` and writes terminal evidence
+outside child stdout. Verify one well-formed evidence file against the same
+spec, nonce, binding and helper pin before using any numeric exit code. Missing,
+duplicate, malformed or mismatched evidence, or an unknown terminal, is
+UNKNOWN/BLOCKED; child stdout and the helper's console message are not terminal
+authority. `c2c record --exit-code` remains downstream of verification.
+
+A qualifying D-025 host-context retry may use this same pinned helper as its
+only carrier. Keep the identical target spec, including nonce, allowlist and
+value digest, and the same helper hash. Only the exclusive local evidence
+destination may differ. If the host environment fails the bound digest, stop;
+do not silently change the spec or retry again.
+
+## Recover procedure
+
+1. Use Recover only for an exact standalone user event in the active Personal
+   Taskbook Harness after the user attests that the original Harness/session/
+   process for the unfinished claim cannot continue. `Reconnecting...`, a
+   stream retry, silence, elapsed time, or missing output alone never authorizes
+   Recover. If the same turn/session may still continue, do not use Recover and
+   do not issue another Do.
+2. Keep the bridge-bound workspace and `C2C_STATE_DIR`. Check local `status` and
+   `taskbook inspect` identity first. If they disagree, state is corrupt, or the
+   lifecycle lock is busy, stop without switching roots, repairing a lock, or
+   selecting another task. If no unfinished claim exists, report that and do
+   not mutate lifecycle or project state.
+3. With a fresh retained recovery authorization ID, run once:
+
+   ```powershell
+   node (Join-Path $repo "bin\c2c.js") taskbook recover `
+     --workspace $workspace --recovery-authorization-id <recoveryAuthorizationId>
+   ```
+
+   Recover inspects only durable execution/output evidence already linked to
+   the unfinished claim while holding the workspace lifecycle lock. It may
+   close out a uniquely complete linked result; otherwise it records the claim
+   as blocked. It never reruns engineering work to create proof.
+   Before persisting Result V2, Recover requires fresh authenticated evidence
+   that the Bridge bound to this workspace and local state root reads V2. If
+   that proof is absent or unsupported, it returns `UPGRADE_REQUIRED` before
+   writing a result. Preserve the unfinished claim, stop, and use a separately
+   authorized controlled Bridge upgrade; a later Recover is a new event with
+   a fresh recovery authorization ID.
+4. Recover preserves project/workspace side effects. Do not run tests or
+   commands, edit project files, clean up, roll back, reset, stash, checkout,
+   requeue, submit a replacement task, launch a Harness, or recover another
+   workspace as part of this event.
+5. If the reply is lost, read local Taskbook state before taking any action.
+   Never issue a new Do or create another recovery authorization to repeat the
+   same resolution. A later Recover against a terminal claim is read-only.
+6. Stop after this one lifecycle resolution.
+
 ## Host-context-dependent operations
 
 Keep ordinary project work in the normal sandbox. A task may include one
@@ -129,7 +203,8 @@ operation as follows:
    blanket elevation or permission for unrelated commands.
 3. Repeat the same executable and arguments, working directory, and relevant
    environment once. The approved invocation must contain only that operation:
-   no wrapper shell, compound command, script, added command, or changed flags.
+   no wrapper shell, compound command, script, added command, or changed flags,
+   except the sole pinned local exact-terminal evidence helper defined above.
 4. Capture both attempts and the approval outcome in local evidence. Continue
    only when the task's stated acceptance condition passes; otherwise stop and
    record the bounded failure.

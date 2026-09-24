@@ -16,7 +16,8 @@ export type TaskbookErrorCode =
   | "TASK_NOT_ELIGIBLE"
   | "AUTHORIZATION_REUSED"
   | "UNFINISHED_TASK"
-  | "EVIDENCE_INVALID";
+  | "EVIDENCE_INVALID"
+  | "UPGRADE_REQUIRED";
 
 /** Default short, safe message per code. */
 const DEFAULT_MESSAGES: Record<TaskbookErrorCode, string> = {
@@ -31,6 +32,7 @@ const DEFAULT_MESSAGES: Record<TaskbookErrorCode, string> = {
   AUTHORIZATION_REUSED: "This local authorization has already been consumed.",
   UNFINISHED_TASK: "An unfinished claimed Taskbook requires local investigation.",
   EVIDENCE_INVALID: "Execution evidence is incomplete or does not match the claim.",
+  UPGRADE_REQUIRED: "The bound Bridge does not prove support for this Taskbook lifecycle version.",
 };
 
 /**

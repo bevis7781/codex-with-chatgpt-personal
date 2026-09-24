@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
@@ -99,6 +100,9 @@ describe("Personal Taskbook Skill setup", () => {
       "utf8"
     );
     const publicRule = fs.readFileSync(path.join(repoRoot, "skill", "PERSONAL-TASKBOOK.md"), "utf8");
+    const helperBytes = fs.readFileSync(path.join(repoRoot, "scripts", "exact-terminal.mjs"));
+    const pin = JSON.parse(fs.readFileSync(path.join(repoRoot, "scripts", "exact-terminal.pin.json"), "utf8"));
+    expect(crypto.createHash("sha256").update(helperBytes).digest("hex")).toBe(pin.sha256);
     expect(publicRule).not.toMatch(/[A-Z]:[\\/]/);
 
     expect(installedMain).toContain(repoRoot.replace(/\\/g, "/"));
@@ -106,12 +110,24 @@ describe("Personal Taskbook Skill setup", () => {
     expect(installedRule).toContain(stateDir.replace(/\\/g, "/"));
     expect(installedRule).toContain("$workspace = (Resolve-Path .).Path");
     expect(installedRule).not.toContain("<C2C_STATE_DIR>");
+    expect(installedRule).toContain("## Recover procedure");
+  expect(installedRule).toContain("taskbook recover");
+  expect(installedRule).toContain("UPGRADE_REQUIRED");
+    expect(installedRule).toContain("Reconnecting...");
+    expect(installedRule).toContain("fresh");
+    expect(installedRule).toContain("recoveryAuthorizationId");
     expect(installedPersonal).toContain("name: codex-with-chatgpt-personal-taskbook");
     expect(installedPersonal).toContain(PERSONAL_TASKBOOK_MANAGED_MARKER);
     expect(installedPersonal).toContain("Do not use this skill for");
     expect(installedPersonal).toContain("unbound workspaces");
 
     for (const installed of [installedRule, installedPersonal]) {
+      expect(installed).toContain("## Pinned local exact-terminal evidence exception");
+      expect(installed).toContain(pin.sha256);
+      expect(installed).toContain("fresh random 128-bit nonce");
+      expect(installed).toContain("Only allowlisted environment");
+      expect(installed).toContain("same helper hash");
+      expect(installed).toContain("does not add an execution");
       expect(installed).toContain("## Host-context-dependent operations");
       expect(installed).toContain("Run the exact operation once in the ordinary sandbox");
       expect(installed).toContain("sandbox network/connectivity");

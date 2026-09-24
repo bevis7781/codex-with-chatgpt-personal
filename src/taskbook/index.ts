@@ -10,4 +10,6 @@ export * from "./lock.js";
 export * from "./audit.js";
 export * from "./store.js";
 export * from "./lifecycle-records.js";
+export * from "./lifecycle-capability.js";
 export * from "./lifecycle.js";
+export * from "./recovery-evidence.js";
