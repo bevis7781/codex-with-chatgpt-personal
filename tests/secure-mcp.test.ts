@@ -26,6 +26,7 @@ import { importManagedRuntime, verifyManagedBinary } from "../src/secure-mcp/man
 import {
   connectAll,
   disconnectAll,
+  statusAll,
   type NativeCommandRunner,
 } from "../src/secure-mcp/runtime.js";
 import { startBridge } from "../src/bridge/server.js";
@@ -285,7 +286,14 @@ describe("OpenAI Secure MCP local state", () => {
     process.env.C2C_STATE_DIR = stateDir;
     const workspaceRoot = projectWorkspaceFixture();
     const record = registerSecureMcpWorkspace({ workspaceRoot, tunnelId, stateDir });
+    const untouchedWorkspaceRoot = projectWorkspaceFixture();
+    const untouchedRecord = registerSecureMcpWorkspace({
+      workspaceRoot: untouchedWorkspaceRoot,
+      tunnelId: "tunnel_abcdefabcdefabcdefabcdefabcdefab",
+      stateDir,
+    });
     const bridge = await startBridge({ workspaceRoot, port: 0, localOnly: true });
+    const untouchedBridge = await startBridge({ workspaceRoot: untouchedWorkspaceRoot, port: 0, localOnly: true });
     const nativeHealth = createServer((request, response) => {
       if (request.url === "/healthz") {
         response.writeHead(200, { "content-type": "text/plain" });
@@ -308,14 +316,29 @@ describe("OpenAI Secure MCP local state", () => {
     if (!address || typeof address === "string") throw new Error("native health server did not bind to a TCP port");
     const healthBase = `http://127.0.0.1:${(address as AddressInfo).port}`;
     const mcpServerUrl = `http://127.0.0.1:${bridge.port}/mcp`;
-    type Mode = "healthy" | "target-mismatch" | "tunnel-mismatch" | "unhealthy" | "malformed";
+    const untouchedMcpServerUrl = `http://127.0.0.1:${untouchedBridge.port}/mcp`;
+    const staleMcpServerUrl = "http://127.0.0.1:6553/mcp";
+    const runtimeFile = path.join(resolveSecureMcpPaths(stateDir).runtimeDir, `${record.workspaceId}.json`);
+    const restorePersistedOldTarget = () => {
+      const persisted = JSON.parse(fs.readFileSync(runtimeFile, "utf8")) as Record<string, unknown>;
+      persisted.mcpServerUrl = staleMcpServerUrl;
+      persisted.bridgePort = 6553;
+      fs.writeFileSync(runtimeFile, JSON.stringify(persisted), "utf8");
+    };
+    type Mode = "healthy" | "target-mismatch" | "tunnel-mismatch" | "unhealthy" | "malformed" | "wrong-binary" | "conflicting-target";
     let mode: Mode = "healthy";
+    let reconnected = false;
+    let stopFailure = false;
+    let connectFailure = false;
+    let readinessFailureAfterConnect = false;
     const calls: Array<{ args: string[]; env: NodeJS.ProcessEnv }> = [];
+    const primaryAlias = "c2c-" + record.workspaceId;
+    const untouchedAlias = "c2c-" + untouchedRecord.workspaceId;
     const officialStatus = (): Record<string, unknown> => {
       if (mode === "malformed") {
         return {
           runtime_state: "ready",
-          alias: "c2c-" + record.workspaceId,
+          alias: primaryAlias,
           process_running: true,
           process: { pid: process.pid, target_kind: "unexpected", target_value: mcpServerUrl },
           tunnel_id: record.tunnelId,
@@ -324,6 +347,7 @@ describe("OpenAI Secure MCP local state", () => {
         };
       }
       const unhealthy = mode === "unhealthy";
+      const readinessFailed = readinessFailureAfterConnect && reconnected;
       return {
         alias: "c2c-" + record.workspaceId,
         control_plane_poll_health: { reason: "no live admin UI system snapshot", state: "unknown" },
@@ -339,25 +363,68 @@ describe("OpenAI Secure MCP local state", () => {
           "tunnel-client runtimes status c2c-" + record.workspaceId + " --json",
           "tunnel-client runtimes status c2c-" + record.workspaceId,
         ],
+        ...(mode === "conflicting-target" ? { mcp_server_url: mcpServerUrl } : {}),
         process: {
           pid: process.pid,
           target_kind: "server_url",
-          target_value: mode === "target-mismatch" ? "http://127.0.0.1:6553/mcp" : mcpServerUrl,
-          tunnel_id: record.tunnelId,
+          target_value: (mode === "target-mismatch" || mode === "wrong-binary" || mode === "conflicting-target") && !reconnected
+            ? staleMcpServerUrl
+            : mcpServerUrl,
+          tunnel_id: mode === "tunnel-mismatch" ? "tunnel_abcdefabcdefabcdefabcdefabcdefab" : record.tunnelId,
+          ...(mode === "wrong-binary" ? { binary_path: "C:\\foreign\\tunnel-client.exe" } : {}),
         },
         process_running: true,
-        ready: !unhealthy,
-        runtime_state: unhealthy ? "unhealthy" : "ready",
+        ready: !unhealthy && !readinessFailed,
+        runtime_state: unhealthy ? "unhealthy" : readinessFailed ? "starting" : "ready",
         tunnel_id: mode === "tunnel-mismatch" ? "tunnel_abcdefabcdefabcdefabcdefabcdefab" : record.tunnelId,
       };
     };
+    const untouchedOfficialStatus = (): Record<string, unknown> => ({
+      alias: untouchedAlias,
+      control_plane_poll_health: { reason: "no live admin UI system snapshot", state: "unknown" },
+      health_url: `${healthBase}/healthz`,
+      healthy: true,
+      local: {
+        effective_health: {
+          healthz: { body: "live", ok: true, status: 200, url: `${healthBase}/healthz` },
+          readyz: { body: "ready (mcp initialize requires auth)", ok: true, status: 200, url: `${healthBase}/readyz` },
+        },
+      },
+      process: {
+        pid: process.pid,
+        target_kind: "server_url",
+        target_value: untouchedMcpServerUrl,
+        tunnel_id: untouchedRecord.tunnelId,
+      },
+      process_running: true,
+      ready: true,
+      runtime_state: "ready",
+      tunnel_id: untouchedRecord.tunnelId,
+    });
     const runner: NativeCommandRunner = {
       run(_binary, args, options) {
         calls.push({ args: [...args], env: { ...options.env } });
         if (args[0] !== "runtimes") return { status: 1, stdout: "", stderr: "unsupported" };
-        if (args[1] === "status") return { status: 0, stdout: JSON.stringify(officialStatus(), null, 2), stderr: "" };
-        if (args[1] === "connect") return { status: 0, stdout: JSON.stringify({ state: "running" }), stderr: "" };
-        if (args[1] === "stop") return { status: 0, stdout: JSON.stringify({ state: "stopped" }), stderr: "" };
+        if (args[1] === "status") {
+          const status = args[2] === primaryAlias
+            ? officialStatus()
+            : args[2] === untouchedAlias
+              ? untouchedOfficialStatus()
+              : null;
+          if (!status) return { status: 1, stdout: "", stderr: `alias ${args[2]} is not known; run create or connect first` };
+          return { status: 0, stdout: JSON.stringify(status, null, 2), stderr: "" };
+        }
+        if (args[1] === "connect") {
+          if (args[args.indexOf("--alias") + 1] === primaryAlias) {
+            if (connectFailure) return { status: 1, stdout: "", stderr: "unexpected connect failure" };
+            reconnected = true;
+          }
+          return { status: 0, stdout: JSON.stringify({ state: "running" }), stderr: "" };
+        }
+        if (args[1] === "stop") {
+          if (stopFailure) return { status: 1, stdout: "", stderr: "unexpected stop failure" };
+          return { status: 0, stdout: JSON.stringify({ state: "stopped" }), stderr: "" };
+        }
         return { status: 1, stdout: "", stderr: "unsupported" };
       },
     };
@@ -368,7 +435,7 @@ describe("OpenAI Secure MCP local state", () => {
 
       const first = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
       expect(first.ok).toBe(true);
-      expect(first.results[0]).toMatchObject({
+      expect(first.results.find((result) => result.workspaceId === record.workspaceId)).toMatchObject({
         status: "PASS",
         runtime: {
           state: "ready",
@@ -376,30 +443,197 @@ describe("OpenAI Secure MCP local state", () => {
           controlPlanePollHealth: "unknown",
         },
       });
+      expect(first.results.find((result) => result.workspaceId === untouchedRecord.workspaceId)).toMatchObject({
+        status: "PASS",
+        enabled: true,
+        bridge: { state: "healthy", port: untouchedBridge.port },
+        runtime: { state: "ready", mcpServerUrl: untouchedMcpServerUrl },
+      });
       expect(calls.filter((call) => call.args[1] === "connect")).toHaveLength(0);
 
       const second = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
       expect(second.ok).toBe(true);
       expect(calls.filter((call) => call.args[1] === "connect")).toHaveLength(0);
 
+      restorePersistedOldTarget();
       mode = "target-mismatch";
-      const targetMismatch = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
-      expect(targetMismatch.results[0]).toMatchObject({ status: "FAIL", reasonCode: "SECURE_MCP_RUNTIME_TARGET_CHANGED" });
+      const readOnlyStatus = await statusAll({ stateDir, runner });
+      expect(readOnlyStatus.results.find((result) => result.workspaceId === record.workspaceId)).toMatchObject({
+        status: "BLOCKED",
+        runtime: { state: "mismatch" },
+      });
+      expect(calls.filter((call) => call.args[1] === "stop")).toHaveLength(0);
+      expect(calls.filter((call) => call.args[1] === "connect")).toHaveLength(0);
+
+      fs.rmSync(runtimeFile);
+      const noPriorOwnership = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
+      expect(noPriorOwnership.results.find((result) => result.workspaceId === record.workspaceId)).toMatchObject({
+        status: "FAIL",
+        reasonCode: "SECURE_MCP_RUNTIME_TARGET_CHANGED",
+      });
+      expect(calls.filter((call) => call.args[1] === "stop")).toHaveLength(0);
+      expect(calls.filter((call) => call.args[1] === "connect")).toHaveLength(0);
+
+      mode = "healthy";
+      const restoredOwnership = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
+      expect(restoredOwnership.results.find((result) => result.workspaceId === record.workspaceId)?.status).toBe("PASS");
+
+      restorePersistedOldTarget();
+      mode = "target-mismatch";
+      const stopsBeforeReconciliation = calls.filter((call) => call.args[1] === "stop").length;
+      const connectsBeforeReconciliation = calls.filter((call) => call.args[1] === "connect").length;
+      stopFailure = true;
+      const stopBlocked = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
+      expect(stopBlocked.results.find((result) => result.workspaceId === record.workspaceId)).toMatchObject({
+        status: "FAIL",
+        reasonCode: "SECURE_MCP_RUNTIME_STOP_FAILED",
+      });
+      expect(calls.filter((call) => call.args[1] === "stop")).toHaveLength(stopsBeforeReconciliation + 1);
+      expect(calls.filter((call) => call.args[1] === "connect")).toHaveLength(connectsBeforeReconciliation);
+
+      stopFailure = false;
+      mode = "conflicting-target";
+      const conflictingTarget = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
+      expect(conflictingTarget.results.find((result) => result.workspaceId === record.workspaceId)).toMatchObject({
+        status: "FAIL",
+        reasonCode: "SECURE_MCP_RUNTIME_TARGET_AMBIGUOUS",
+      });
+      expect(calls.filter((call) => call.args[1] === "stop")).toHaveLength(stopsBeforeReconciliation + 1);
+      expect(calls.filter((call) => call.args[1] === "connect")).toHaveLength(connectsBeforeReconciliation);
+
+      mode = "target-mismatch";
+      const reconciled = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
+      expect(reconciled.results.find((result) => result.workspaceId === record.workspaceId)).toMatchObject({
+        status: "PASS",
+        runtime: { state: "ready", mcpServerUrl },
+      });
+      expect(calls.filter((call) => call.args[1] === "stop" && call.args[2] === primaryAlias)).toHaveLength(stopsBeforeReconciliation + 2);
+      expect(
+        calls.filter((call) => call.args[1] === "connect" && call.args[call.args.indexOf("--alias") + 1] === primaryAlias)
+      ).toHaveLength(connectsBeforeReconciliation + 1);
+      expect(reconciled.results.find((result) => result.workspaceId === untouchedRecord.workspaceId)).toMatchObject({
+        status: "PASS",
+        enabled: true,
+        bridge: { state: "healthy", port: untouchedBridge.port },
+        runtime: { state: "ready", mcpServerUrl: untouchedMcpServerUrl },
+      });
+      expect(calls.some((call) => call.args[1] === "stop" && call.args[2] === `c2c-${untouchedRecord.workspaceId}`)).toBe(false);
+      const untouchedConnectsAfterReconciliation = calls.filter(
+        (call) => call.args[1] === "connect" && call.args[call.args.indexOf("--alias") + 1] === untouchedAlias
+      ).length;
+      const untouchedStopsAfterReconciliation = calls.filter(
+        (call) => call.args[1] === "stop" && call.args[2] === untouchedAlias
+      ).length;
+
+      const idempotent = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
+      expect(idempotent.results.find((result) => result.workspaceId === record.workspaceId)).toMatchObject({
+        status: "PASS",
+        runtime: { state: "ready", mcpServerUrl },
+      });
+      expect(idempotent.results.find((result) => result.workspaceId === untouchedRecord.workspaceId)).toMatchObject({
+        status: "PASS",
+        bridge: { state: "healthy", port: untouchedBridge.port },
+        runtime: { state: "ready", mcpServerUrl: untouchedMcpServerUrl },
+      });
+      expect(calls.filter((call) => call.args[1] === "stop" && call.args[2] === primaryAlias)).toHaveLength(stopsBeforeReconciliation + 2);
+      expect(
+        calls.filter((call) => call.args[1] === "connect" && call.args[call.args.indexOf("--alias") + 1] === primaryAlias)
+      ).toHaveLength(connectsBeforeReconciliation + 1);
+      expect(calls.filter((call) => call.args[1] === "stop" && call.args[2] === untouchedAlias)).toHaveLength(untouchedStopsAfterReconciliation);
+      expect(
+        calls.filter((call) => call.args[1] === "connect" && call.args[call.args.indexOf("--alias") + 1] === untouchedAlias)
+      ).toHaveLength(untouchedConnectsAfterReconciliation);
+
+      restorePersistedOldTarget();
+      mode = "target-mismatch";
+      reconnected = false;
+      connectFailure = true;
+      const callsBeforeConnectFailure = calls.length;
+      const stopsBeforeConnectFailure = calls.filter((call) => call.args[1] === "stop" && call.args[2] === primaryAlias).length;
+      const connectsBeforeConnectFailure = calls.filter(
+        (call) => call.args[1] === "connect" && call.args[call.args.indexOf("--alias") + 1] === primaryAlias
+      ).length;
+      const connectFailedAfterStop = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
+      expect(connectFailedAfterStop.results.find((result) => result.workspaceId === record.workspaceId)).toMatchObject({
+        status: "FAIL",
+        reasonCode: "SECURE_MCP_RUNTIME_CONNECT_FAILED",
+      });
+      expect(calls.filter((call) => call.args[1] === "stop" && call.args[2] === primaryAlias)).toHaveLength(stopsBeforeConnectFailure + 1);
+      expect(
+        calls.filter((call) => call.args[1] === "connect" && call.args[call.args.indexOf("--alias") + 1] === primaryAlias)
+      ).toHaveLength(connectsBeforeConnectFailure + 1);
+      const connectFailureStopIndex = calls.findIndex((call, index) => index >= callsBeforeConnectFailure && call.args[1] === "stop" && call.args[2] === primaryAlias);
+      const connectFailureConnectIndex = calls.findIndex(
+        (call, index) => index >= callsBeforeConnectFailure && call.args[1] === "connect" && call.args[call.args.indexOf("--alias") + 1] === primaryAlias
+      );
+      expect(connectFailureStopIndex).toBeGreaterThanOrEqual(callsBeforeConnectFailure);
+      expect(connectFailureConnectIndex).toBeGreaterThan(connectFailureStopIndex);
+      expect(fs.existsSync(runtimeFile)).toBe(false);
+
+      connectFailure = false;
+      mode = "healthy";
+      const restoredAfterConnectFailure = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
+      expect(restoredAfterConnectFailure.results.find((result) => result.workspaceId === record.workspaceId)?.status).toBe("PASS");
+
+      restorePersistedOldTarget();
+      mode = "target-mismatch";
+      reconnected = false;
+      readinessFailureAfterConnect = true;
+      const callsBeforeReadinessFailure = calls.length;
+      const stopsBeforeReadinessFailure = calls.filter((call) => call.args[1] === "stop" && call.args[2] === primaryAlias).length;
+      const connectsBeforeReadinessFailure = calls.filter(
+        (call) => call.args[1] === "connect" && call.args[call.args.indexOf("--alias") + 1] === primaryAlias
+      ).length;
+      const readinessFailedAfterStop = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
+      expect(readinessFailedAfterStop.results.find((result) => result.workspaceId === record.workspaceId)).toMatchObject({
+        status: "FAIL",
+        reasonCode: "SECURE_MCP_RUNTIME_READINESS_FAILED",
+      });
+      expect(calls.filter((call) => call.args[1] === "stop" && call.args[2] === primaryAlias)).toHaveLength(stopsBeforeReadinessFailure + 1);
+      expect(
+        calls.filter((call) => call.args[1] === "connect" && call.args[call.args.indexOf("--alias") + 1] === primaryAlias)
+      ).toHaveLength(connectsBeforeReadinessFailure + 1);
+      const readinessFailureStopIndex = calls.findIndex((call, index) => index >= callsBeforeReadinessFailure && call.args[1] === "stop" && call.args[2] === primaryAlias);
+      const readinessFailureConnectIndex = calls.findIndex(
+        (call, index) => index >= callsBeforeReadinessFailure && call.args[1] === "connect" && call.args[call.args.indexOf("--alias") + 1] === primaryAlias
+      );
+      expect(readinessFailureStopIndex).toBeGreaterThanOrEqual(callsBeforeReadinessFailure);
+      expect(readinessFailureConnectIndex).toBeGreaterThan(readinessFailureStopIndex);
+      expect(fs.existsSync(runtimeFile)).toBe(false);
+
+      readinessFailureAfterConnect = false;
+      mode = "healthy";
+      const restoredAfterReadinessFailure = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
+      expect(restoredAfterReadinessFailure.results.find((result) => result.workspaceId === record.workspaceId)?.status).toBe("PASS");
+      const stablePrimaryStopCount = calls.filter((call) => call.args[1] === "stop" && call.args[2] === primaryAlias).length;
 
       mode = "tunnel-mismatch";
       const tunnelMismatch = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
-      expect(tunnelMismatch.results[0]).toMatchObject({ status: "FAIL", reasonCode: "SECURE_MCP_RUNTIME_TUNNEL_MISMATCH" });
+      expect(tunnelMismatch.results.find((result) => result.workspaceId === record.workspaceId)).toMatchObject({ status: "FAIL", reasonCode: "SECURE_MCP_RUNTIME_TUNNEL_MISMATCH" });
+      expect(calls.filter((call) => call.args[1] === "stop" && call.args[2] === primaryAlias)).toHaveLength(stablePrimaryStopCount);
 
       mode = "unhealthy";
       const unhealthy = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
-      expect(unhealthy.results[0]).toMatchObject({ status: "FAIL", reasonCode: "SECURE_MCP_RUNTIME_FAILED_LIVE" });
+      expect(unhealthy.results.find((result) => result.workspaceId === record.workspaceId)).toMatchObject({ status: "FAIL", reasonCode: "SECURE_MCP_RUNTIME_FAILED_LIVE" });
+      expect(calls.filter((call) => call.args[1] === "stop" && call.args[2] === primaryAlias)).toHaveLength(stablePrimaryStopCount);
 
       mode = "malformed";
       const malformed = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
-      expect(malformed.results[0]).toMatchObject({ status: "FAIL", reasonCode: "SECURE_MCP_RUNTIME_TARGET_CHANGED" });
+      expect(malformed.results.find((result) => result.workspaceId === record.workspaceId)).toMatchObject({ status: "FAIL", reasonCode: "SECURE_MCP_RUNTIME_TARGET_CHANGED" });
+      expect(calls.filter((call) => call.args[1] === "stop" && call.args[2] === primaryAlias)).toHaveLength(stablePrimaryStopCount);
+
+      mode = "wrong-binary";
+      reconnected = false;
+      const wrongBinary = await connectAll({ stateDir, runner, timeoutMs: 5_000, pollMs: 20 });
+      expect(wrongBinary.results.find((result) => result.workspaceId === record.workspaceId)).toMatchObject({
+        status: "FAIL",
+        reasonCode: "SECURE_MCP_RUNTIME_BINARY_MISMATCH",
+      });
+      expect(calls.filter((call) => call.args[1] === "stop" && call.args[2] === primaryAlias)).toHaveLength(stablePrimaryStopCount);
     } finally {
       mode = "healthy";
       await disconnectAll({ stateDir, runner, timeoutMs: 5_000 });
+      await untouchedBridge.close();
       await bridge.close();
       await new Promise<void>((resolve) => nativeHealth.close(() => resolve()));
       delete process.env.C2C_STATE_DIR;

@@ -127,6 +127,9 @@ interface NativeStatus {
   pid: number | null;
   tunnelId: string | null;
   mcpServerUrl: string | null;
+  targetKind: string | null;
+  targetAmbiguous: boolean;
+  identityAmbiguous: boolean;
   healthUrl: string | null;
   readyUrl: string | null;
   health: boolean | null;
@@ -290,6 +293,36 @@ function parseNativeStatus(output: string): NativeStatus {
   const processInfo = directValue(raw, ["process"]);
   const processTargetKind = directStringValue(processInfo, ["target_kind", "targetkind"]);
   const processTargetValue = directStringValue(processInfo, ["target_value", "targetvalue"]);
+  const processTargetIsServerUrl = processTargetKind?.toLowerCase() === "server_url";
+  const topLevelMcpServerUrl = directStringValue(raw, ["mcp_server_url", "mcpserverurl", "target_url", "targeturl"]);
+  const processMcpServerUrl = processTargetIsServerUrl ? processTargetValue : null;
+  const processPid = directNumberValue(processInfo, ["pid"]);
+  const topLevelPid = directNumberValue(raw, ["pid", "process_id", "processid", "runtime_pid"]);
+  const processTunnelId = directStringValue(processInfo, ["tunnel_id", "tunnelid"]);
+  const topLevelTunnelId = directStringValue(raw, ["tunnel_id", "tunnelid"]);
+  const processWorkspaceId = directStringValue(processInfo, ["workspace_id", "workspaceid"]);
+  const topLevelWorkspaceId = directStringValue(raw, ["workspace_id", "workspaceid"]);
+  const processAlias = directStringValue(processInfo, ["alias", "runtime_alias"]);
+  const topLevelAlias = directStringValue(raw, ["alias", "runtime_alias"]);
+  const processBinaryPath = directStringValue(processInfo, ["binary", "binary_path", "binarypath", "tunnel_client_bin", "tunnelclientbin"]);
+  const topLevelBinaryPath = directStringValue(raw, ["binary", "binary_path", "binarypath", "tunnel_client_bin", "tunnelclientbin"]);
+  const valuesConflict = <T,>(left: T | null, right: T | null): boolean => left !== null && right !== null && left !== right;
+  const targetAmbiguous =
+    valuesConflict(
+      topLevelMcpServerUrl ? normalizeUrl(topLevelMcpServerUrl) : null,
+      processMcpServerUrl ? normalizeUrl(processMcpServerUrl) : null
+    ) ||
+    Boolean(topLevelMcpServerUrl && processTargetKind && !processTargetIsServerUrl);
+  const identityAmbiguous =
+    valuesConflict(topLevelAlias, processAlias) ||
+    valuesConflict(topLevelWorkspaceId, processWorkspaceId) ||
+    valuesConflict(topLevelPid, processPid) ||
+    valuesConflict(topLevelTunnelId, processTunnelId) ||
+    Boolean(
+      topLevelBinaryPath &&
+        processBinaryPath &&
+        !samePath(path.resolve(topLevelBinaryPath), path.resolve(processBinaryPath))
+    );
   const local = directValue(raw, ["local"]);
   const effectiveHealth = directValue(local, ["effective_health", "effectivehealth"]);
   const healthz = directValue(effectiveHealth, ["healthz"]);
@@ -308,7 +341,6 @@ function parseNativeStatus(output: string): NativeStatus {
         : stateRaw.includes("run") || stateRaw.includes("connect") || stateRaw === "healthy"
           ? "running"
           : "unknown";
-  const topLevelMcpServerUrl = directStringValue(raw, ["mcp_server_url", "mcpserverurl", "target_url", "targeturl"]);
   const health =
     directHealthBooleanValue(raw, ["healthy", "healthz", "health_ok", "healthok", "health"]) ??
     healthBooleanValue(healthz, ["ok", "status"]);
@@ -329,6 +361,9 @@ function parseNativeStatus(output: string): NativeStatus {
       directStringValue(raw, ["tunnel_id", "tunnelid"]) ??
       directStringValue(processInfo, ["tunnel_id", "tunnelid"]) ??
       stringValue(raw, ["tunnel_id", "tunnelid"]),
+    targetKind: processTargetKind?.toLowerCase() ?? null,
+    targetAmbiguous,
+    identityAmbiguous,
     mcpServerUrl:
       topLevelMcpServerUrl ??
       (processTargetKind?.toLowerCase() === "server_url" ? processTargetValue : null) ??
@@ -578,6 +613,12 @@ async function assessNativeStatus(opts: {
 }): Promise<NativeAssessment> {
   const { status } = opts;
   if (!status) return { state: "missing" };
+  if (status.identityAmbiguous) {
+    return { state: "ambiguous", status, reasonCode: "SECURE_MCP_RUNTIME_IDENTITY_AMBIGUOUS" };
+  }
+  if (status.targetAmbiguous) {
+    return { state: "ambiguous", status, reasonCode: "SECURE_MCP_RUNTIME_TARGET_AMBIGUOUS" };
+  }
   if (status.state === "stopped") return { state: "stopped" };
   if (status.state === "failed") {
     if (status.pid && processIsAlive(status.pid)) {
@@ -601,18 +642,21 @@ async function assessNativeStatus(opts: {
   if (status.tunnelId !== opts.expected.tunnelId) {
     return { state: "ambiguous", status, reasonCode: "SECURE_MCP_RUNTIME_TUNNEL_MISMATCH" };
   }
-  if (
+  const targetChanged =
     !status.mcpServerUrl ||
-    normalizeUrl(status.mcpServerUrl) !== normalizeUrl(opts.mcpServerUrl ?? "")
-  ) {
-    return { state: "mismatch", status, reasonCode: "SECURE_MCP_RUNTIME_TARGET_CHANGED" };
-  }
+    normalizeUrl(status.mcpServerUrl) !== normalizeUrl(opts.mcpServerUrl ?? "");
   if (status.binaryPath) {
     const binary = path.resolve(status.binaryPath);
     const managed = path.resolve(opts.managedBinary);
     if (!samePath(binary, managed)) {
       return { state: "ambiguous", status, reasonCode: "SECURE_MCP_RUNTIME_BINARY_MISMATCH" };
     }
+  }
+  if (status.health === false) {
+    return { state: "ambiguous", status, reasonCode: "SECURE_MCP_RUNTIME_HEALTH_FAILED" };
+  }
+  if (status.ready === false) {
+    return { state: "ambiguous", status, reasonCode: "SECURE_MCP_RUNTIME_READINESS_FAILED" };
   }
   const healthEvidence = status.health === true || status.state === "ready";
   const readyEvidence = status.ready === true || status.state === "ready";
@@ -628,7 +672,38 @@ async function assessNativeStatus(opts: {
   if (!healthEvidence || !readyEvidence) {
     return { state: "ambiguous", status, reasonCode: "SECURE_MCP_RUNTIME_READINESS_UNAVAILABLE" };
   }
+  if (targetChanged) return { state: "mismatch", status, reasonCode: "SECURE_MCP_RUNTIME_TARGET_CHANGED" };
   return { state: "ready", status };
+}
+
+function persistedStateOwnsTargetChange(opts: {
+  previous: SecureMcpRuntimeState | null;
+  status: NativeStatus;
+  record: SecureMcpWorkspaceRecord;
+  workspaceRoot: string;
+  alias: string;
+  managed: ManagedRuntimeManifest;
+  managedBinary: string;
+}): boolean {
+  const { previous, status, record, workspaceRoot, alias, managed, managedBinary } = opts;
+  return Boolean(
+    previous &&
+      status.targetKind === "server_url" &&
+      status.mcpServerUrl &&
+      status.alias === alias &&
+      (status.workspaceId === null || status.workspaceId === record.workspaceId) &&
+      status.pid !== null &&
+      status.tunnelId === record.tunnelId &&
+      (!status.binaryPath || samePath(path.resolve(status.binaryPath), path.resolve(managedBinary))) &&
+      previous.workspaceId === record.workspaceId &&
+      samePath(previous.workspaceRoot, workspaceRoot) &&
+      previous.tunnelId === record.tunnelId &&
+      previous.alias === alias &&
+      previous.pid === status.pid &&
+      normalizeUrl(previous.mcpServerUrl) === normalizeUrl(status.mcpServerUrl) &&
+      previous.binaryVersion === managed.version &&
+      previous.binarySha256 === managed.sha256
+  );
 }
 
 function nativeConnect(opts: {
@@ -673,12 +748,18 @@ function nativeStop(opts: {
   env: NodeJS.ProcessEnv;
   runner: NativeCommandRunner;
   timeoutMs: number;
+  acceptMissing?: boolean;
 }): void {
   const result = opts.runner.run(opts.binary, ["runtimes", "stop", opts.alias, "--json"], {
     env: opts.env,
     timeoutMs: opts.timeoutMs,
   });
-  if (result.status !== 0 && !isMissingStatus(result, opts.alias)) throw secureError("SECURE_MCP_RUNTIME_STOP_FAILED");
+  if (
+    result.status !== 0 &&
+    !(opts.acceptMissing !== false && isMissingStatus(result, opts.alias))
+  ) {
+    throw secureError("SECURE_MCP_RUNTIME_STOP_FAILED");
+  }
 }
 
 async function waitForNativeReady(opts: {
@@ -757,6 +838,7 @@ async function connectOne(opts: {
   const bridge = await liveBridgeFor(opts.record);
   const alias = aliasFor(workspace.id);
   const mcpServerUrl = `http://127.0.0.1:${bridge.runtime.port}/mcp`;
+  let previous = readRuntimeState(opts.paths, opts.record.workspaceId);
   const statusEnv = trustedChildEnv(opts.config, mcpServerUrl, undefined, opts.paths);
   const existing = nativeStatus(opts.paths.managedClientBin, alias, statusEnv, opts.runner, 10_000);
   const assessment = await assessNativeStatus({
@@ -768,7 +850,32 @@ async function connectOne(opts: {
     managed: opts.managed,
   });
   if (assessment.state === "ambiguous") throw secureError(assessment.reasonCode);
-  if (assessment.state === "mismatch") throw secureError(assessment.reasonCode);
+  if (assessment.state === "mismatch") {
+    if (
+      assessment.reasonCode !== "SECURE_MCP_RUNTIME_TARGET_CHANGED" ||
+      !persistedStateOwnsTargetChange({
+        previous,
+        status: assessment.status,
+        record: opts.record,
+        workspaceRoot: workspace.root,
+        alias,
+        managed: opts.managed,
+        managedBinary: opts.paths.managedClientBin,
+      })
+    ) {
+      throw secureError(assessment.reasonCode);
+    }
+    nativeStop({
+      binary: opts.paths.managedClientBin,
+      alias,
+      env: statusEnv,
+      runner: opts.runner,
+      timeoutMs: Math.min(opts.timeoutMs, 10_000),
+      acceptMissing: false,
+    });
+    clearRuntimeState(opts.paths, opts.record.workspaceId);
+    previous = null;
+  }
   let status: NativeStatus;
   if (assessment.state === "ready" && assessment.status.mcpServerUrl && normalizeUrl(assessment.status.mcpServerUrl) === normalizeUrl(mcpServerUrl)) {
     status = assessment.status;
@@ -797,7 +904,6 @@ async function connectOne(opts: {
     });
   }
   const now = new Date().toISOString();
-  const previous = readRuntimeState(opts.paths, opts.record.workspaceId);
   writeRuntimeState(opts.paths, {
     schemaVersion: SECURE_MCP_RUNTIME_SCHEMA_VERSION,
     workspaceId: opts.record.workspaceId,
