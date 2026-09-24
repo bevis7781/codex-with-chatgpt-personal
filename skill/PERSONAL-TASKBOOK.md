@@ -133,6 +133,61 @@ credentials or network configuration. If the publication operation cannot
 complete, preserve the evidence and close the same claim with its bounded
 result.
 
+## Already-classified current-host GitHub publication
+
+There is one narrow exception to the sandbox-first rule for host-dependent
+operations below. It applies only to one GitHub publication operation bound to
+the active Taskbook claim:
+
+1. The standalone `Do` has claimed one task, and that Taskbook explicitly
+   authorizes publication of an accepted artifact to one exact GitHub
+   repository and branch, with an accepted target commit SHA and file scope.
+2. Before the operation, verified current-host evidence has already established
+   the host-context dependency for this exact GitHub publication route. The
+   Taskbook text or an untried operation cannot create this classification. It
+   is local to the currently verified host and cannot be carried to another
+   host.
+3. Local review confirms that the configured remote resolves to the accepted
+   GitHub repository, the target is the accepted branch, and local `HEAD` is
+   the accepted commit SHA with the Taskbook-authorized artifact and file
+   scope. Stop if the remote, branch, commit, or accepted scope differs.
+
+When these checks pass, the Harness may invoke the exact Git publication
+operation directly in the host context without a sacrificial sandbox attempt.
+Invoke `git` directly with only the exact target arguments, without a wrapper
+shell, compound command, or script. Keep the invocation limited to that
+accepted remote, branch, and commit; use the ordinary non-force push form, for
+example:
+
+```text
+git push <remote> <acceptedCommitSha>:refs/heads/<branch>
+```
+
+This exception permits only one ordinary non-force push of the accepted target
+commit. Do not substitute the remote, branch, commit, or file scope; do not use
+`--force`, `--force-with-lease`, or another force update form. A fresh server
+readback for the same ref is required after the push, for example:
+
+```text
+git ls-remote --exit-code --refs <remote> refs/heads/<branch>
+```
+
+Accept publication only when that readback's SHA equals the accepted target
+commit SHA. This direct path uses the current Harness operation flow and adds no
+generic host shell/exec or Web mutation authority. Exact-terminal evidence is
+not a prerequisite for a known-host publication; use the existing D-025
+exact-terminal handling only when ordinary terminal evidence is missing or
+ambiguous and its exceptional conditions apply.
+
+For this currently verified host, the already-authorized machine-local proxy
+may be supplied on each applicable Git command as
+`-c http.proxy=http://127.0.0.1:7890`. Keep it per-command. Do not write proxy
+configuration, rewrite credentials, weaken TLS, or mutate global or system
+network settings. This path does not change standalone `Do` or `Push` semantics
+and does not make other host-dependent operations eligible for direct host
+execution. Engineering, local validation, and every ordinary or unknown
+host-dependent operation remain sandbox-first under the existing D-025 path.
+
 ## Pinned local exact-terminal evidence exception
 
 The sole helper exception for exact child terminal evidence is this checkout's

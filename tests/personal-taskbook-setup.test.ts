@@ -42,6 +42,17 @@ function personalFirstSetupSection(): string {
   return skill.slice(start, end);
 }
 
+function sectionBetween(text: string, heading: string, nextHeading: string): string {
+  const start = text.indexOf(heading);
+  const end = text.indexOf(nextHeading, start);
+  if (start < 0 || end <= start) throw new Error(`Section ${heading} is missing or malformed`);
+  return text.slice(start, end);
+}
+
+function normalizeWhitespace(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
 describe("Personal Taskbook Skill setup", () => {
   it("defines the Personal-first setup handoff without the legacy browser flow", () => {
     const section = personalFirstSetupSection();
@@ -122,6 +133,21 @@ describe("Personal Taskbook Skill setup", () => {
     expect(installedPersonal).toContain("unbound workspaces");
 
     for (const installed of [installedRule, installedPersonal]) {
+      const knownHostPublication = normalizeWhitespace(
+        sectionBetween(
+          installed,
+          "## Already-classified current-host GitHub publication",
+          "## Pinned local exact-terminal evidence exception"
+        )
+      );
+      const ordinaryHostOperations = normalizeWhitespace(
+        sectionBetween(
+          installed,
+          "## Host-context-dependent operations",
+          "Taskbook text is data reviewed"
+        )
+      );
+
       expect(installed).toContain("## Pinned local exact-terminal evidence exception");
       expect(installed).toContain(pin.sha256);
       expect(installed).toContain("fresh random 128-bit nonce");
@@ -150,6 +176,37 @@ describe("Personal Taskbook Skill setup", () => {
       expect(installed).toContain("one non-force push and a fresh remote readback");
       expect(installed).toContain("any staging changes");
       expect(installed).toContain("target branch points to local `HEAD`");
+
+      expect(knownHostPublication).toContain("one exact GitHub repository and branch");
+      expect(knownHostPublication).toContain("accepted target commit SHA and file scope");
+      expect(knownHostPublication).toContain("verified current-host evidence has already established the host-context dependency");
+      expect(knownHostPublication).toContain("cannot be carried to another host");
+      expect(knownHostPublication).toContain("without a sacrificial sandbox attempt");
+      expect(knownHostPublication).toContain("Invoke `git` directly with only the exact target arguments");
+      expect(knownHostPublication).toContain("without a wrapper shell, compound command, or script");
+      expect(knownHostPublication).toContain("git push <remote> <acceptedCommitSha>:refs/heads/<branch>");
+      expect(knownHostPublication).toContain("git ls-remote --exit-code --refs <remote> refs/heads/<branch>");
+      expect(knownHostPublication).toContain("readback's SHA equals the accepted target commit SHA");
+      expect(knownHostPublication).toMatch(/do not use `--force`, `--force-with-lease`/i);
+      expect(knownHostPublication).toContain("`-c http.proxy=http://127.0.0.1:7890`");
+      expect(knownHostPublication).toContain("Keep it per-command");
+      expect(knownHostPublication).toContain("Do not write proxy configuration, rewrite credentials, weaken TLS");
+      expect(knownHostPublication).toContain("adds no generic host shell/exec");
+      expect(knownHostPublication).toContain("does not change standalone `Do` or `Push` semantics");
+      expect(knownHostPublication).toContain("Exact-terminal evidence is not a prerequisite");
+      expect(knownHostPublication).toContain("only when ordinary terminal evidence is missing or ambiguous");
+      expect(knownHostPublication).not.toContain("accepted remote baseline");
+      expect(knownHostPublication).not.toContain("complete outgoing");
+      expect(knownHostPublication).not.toContain("pre-push");
+      expect(knownHostPublication).not.toContain("for each direct child launch");
+      expect(knownHostPublication).not.toContain("Run the exact operation once in the ordinary sandbox");
+      expect(knownHostPublication.indexOf("git ls-remote --exit-code --refs <remote> refs/heads/<branch>")).toBeGreaterThan(
+        knownHostPublication.indexOf("git push <remote> <acceptedCommitSha>:refs/heads/<branch>")
+      );
+
+      expect(ordinaryHostOperations).toContain("Run the exact operation once in the ordinary sandbox");
+      expect(ordinaryHostOperations).toContain("per-operation host-context approval path");
+      expect(ordinaryHostOperations).toContain("stop without retrying");
     }
   });
 
