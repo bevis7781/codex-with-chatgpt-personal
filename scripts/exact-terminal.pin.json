@@ -1,5 +1,5 @@
 {
   "schema": "c2c.exact-terminal.pin.v1",
   "helper": "scripts/exact-terminal.mjs",
-  "sha256": "a420fc0a3b9b0e4074448856e95243c3f7f7ca0c831986d815227e37457618dd"
+  "sha256": "e0fc21d632ce973052744d167da24d903ee252ca920b960e3ded392690221857"
 }

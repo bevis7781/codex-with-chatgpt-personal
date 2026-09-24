@@ -4,7 +4,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { environmentDigest, helperDigest, runOperation, verifyEvidence } from "../scripts/exact-terminal.mjs";
+import {
+  helperDigest,
+  invariantEnvironmentDigest,
+  runOperation,
+  verifyEvidence,
+  verifyRetryEvidence,
+} from "../scripts/exact-terminal.mjs";
 
 const roots = [];
 afterEach(() => {
@@ -14,10 +20,14 @@ afterEach(() => {
 function fixture(argv, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "c2c-exact-terminal-"));
   roots.push(root);
-  const environmentAllowlist = options.environmentAllowlist ?? ["PATH", "SYSTEMROOT", "WINDIR"];
+  const environmentPolicy = options.environmentPolicy ?? [
+    { name: "PATH", mode: "context" },
+    { name: "SYSTEMROOT", mode: "context" },
+    { name: "WINDIR", mode: "context" },
+  ];
   return {
     spec: {
-      version: 2,
+      version: 3,
       workspaceId: "915f50d36e23",
       taskId: "d5546382-b7de-485e-8432-ef793b7fb64d",
       claimId: "ee5569a8-7b46-44a5-8126-389e92df5704",
@@ -26,8 +36,8 @@ function fixture(argv, options = {}) {
       executable: options.executable ?? process.execPath,
       argv,
       cwd: root,
-      environmentAllowlist,
-      environmentSha256: environmentDigest(environmentAllowlist),
+      environmentPolicy,
+      invariantEnvironmentSha256: invariantEnvironmentDigest(environmentPolicy),
       maxOutputBytes: options.maxOutputBytes ?? 1024,
       timeoutMs: options.timeoutMs ?? 5000,
     },
@@ -76,19 +86,33 @@ it("passes only allowlisted environment values to the child", async () => {
   const relevantBefore = process.env.C2C_EXACT_RELEVANT;
   const unrelatedBefore = process.env.C2C_EXACT_UNRELATED;
   try {
-    process.env.C2C_EXACT_RELEVANT = "bound-value";
+    process.env.C2C_EXACT_RELEVANT = "ordinary-private-context-value";
     process.env.C2C_EXACT_UNRELATED = "first-unbound-value";
-    const allowlist = ["C2C_EXACT_RELEVANT", "PATH", "SYSTEMROOT", "WINDIR"];
-    const { spec, dir } = fixture(["-e", "process.stdout.write(JSON.stringify({relevant:process.env.C2C_EXACT_RELEVANT,unrelated:process.env.C2C_EXACT_UNRELATED??null}))"], { environmentAllowlist: allowlist });
+    const policy = [
+      { name: "C2C_EXACT_RELEVANT", mode: "context" },
+      { name: "PATH", mode: "context" },
+      { name: "SYSTEMROOT", mode: "context" },
+      { name: "WINDIR", mode: "context" },
+    ];
+    const { spec, dir } = fixture(["-e", "process.stdout.write(JSON.stringify({relevant:process.env.C2C_EXACT_RELEVANT,unrelated:process.env.C2C_EXACT_UNRELATED??null}))"], { environmentPolicy: policy });
     process.env.C2C_EXACT_UNRELATED = "changed-unbound-value";
-    expect(environmentDigest(allowlist)).toBe(spec.environmentSha256);
+    expect(invariantEnvironmentDigest(policy)).toBe(spec.invariantEnvironmentSha256);
     await runOperation(spec, dir, helperDigest());
     const result = verifyEvidence(spec, dir, helperDigest());
     expect(result.verdict).toBe("VERIFIED");
-    expect(JSON.parse(Buffer.from(result.evidence.stdout.base64, "base64").toString())).toEqual({ relevant: "bound-value", unrelated: null });
+    expect(JSON.parse(Buffer.from(result.evidence.stdout.base64, "base64").toString())).toEqual({ relevant: "ordinary-private-context-value", unrelated: null });
+    expect(result.evidence.environmentEvidence.contextPresent).toEqual(["C2C_EXACT_RELEVANT", "PATH", "SYSTEMROOT", "WINDIR"].filter((name) => process.env[name] !== undefined));
+    expect(JSON.stringify(result.evidence.environmentEvidence)).not.toContain("ordinary-private-context-value");
+    expect(JSON.stringify(result.evidence.environmentEvidence)).not.toContain("changed-unbound-value");
     process.env.C2C_EXACT_RELEVANT = "changed-bound-value";
     expect(verifyEvidence(spec, dir, helperDigest()).verdict).toBe("VERIFIED");
-    await expect(runOperation(spec, path.join(path.dirname(dir), "second-evidence"), helperDigest())).rejects.toThrow("ENVIRONMENT_MISMATCH");
+    const secondDir = path.join(path.dirname(dir), "second-evidence");
+    await runOperation(spec, secondDir, helperDigest());
+    const retry = verifyRetryEvidence(spec, dir, secondDir, helperDigest());
+    expect(retry.verdict).toBe("VERIFIED");
+    expect(retry.contextEnvironment.ordinary.sha256).not.toBe(retry.contextEnvironment.retry.sha256);
+    expect(retry.contextEnvironment.ordinary.present).toContain("C2C_EXACT_RELEVANT");
+    expect(retry.contextEnvironment.retry.present).toContain("C2C_EXACT_RELEVANT");
   } finally {
     if (relevantBefore === undefined) delete process.env.C2C_EXACT_RELEVANT;
     else process.env.C2C_EXACT_RELEVANT = relevantBefore;
@@ -97,12 +121,57 @@ it("passes only allowlisted environment values to the child", async () => {
   }
 });
 
-it("rejects an unsorted, duplicate, or overbroad environment allowlist", async () => {
+it("rejects an unsorted, duplicate, overbroad, or undeclared environment policy", async () => {
   const { spec, dir } = fixture(["-e", "process.exit(0)"]);
-  for (const environmentAllowlist of [["PATH", "PATH"], ["WINDIR", "PATH"], Array.from({ length: 49 }, (_, i) => `KEY_${i}`)]) {
-    await expect(runOperation({ ...spec, environmentAllowlist }, dir, helperDigest())).rejects.toThrow();
+  const entry = (name, mode = "context") => ({ name, mode });
+  for (const environmentPolicy of [
+    [entry("PATH"), entry("PATH")],
+    [entry("WINDIR"), entry("PATH")],
+    Array.from({ length: 49 }, (_, i) => entry(`KEY_${i}`)),
+    [entry("PATH", "ambient")],
+    [{ name: "PATH", mode: "context", value: "must-not-be-embedded" }],
+  ]) {
+    await expect(runOperation({ ...spec, environmentPolicy }, dir, helperDigest())).rejects.toThrow();
   }
   expect(fs.existsSync(dir)).toBe(false);
+});
+
+it("fails before launch when an invariant environment value changes", async () => {
+  const prior = process.env.C2C_EXACT_INVARIANT;
+  try {
+    process.env.C2C_EXACT_INVARIANT = "invariant-value-at-spec-creation";
+    const policy = [
+      { name: "C2C_EXACT_CONTEXT", mode: "context" },
+      { name: "C2C_EXACT_INVARIANT", mode: "invariant" },
+    ];
+    const { spec, dir } = fixture(["-e", "process.exit(0)"], { environmentPolicy: policy });
+    process.env.C2C_EXACT_INVARIANT = "different-invariant-value";
+    await expect(runOperation(spec, dir, helperDigest())).rejects.toThrow("INVARIANT_ENVIRONMENT_MISMATCH");
+    expect(fs.existsSync(dir)).toBe(false);
+  } finally {
+    if (prior === undefined) delete process.env.C2C_EXACT_INVARIANT;
+    else process.env.C2C_EXACT_INVARIANT = prior;
+  }
+});
+
+it("rejects retry evidence made with an expanded context policy", async () => {
+  const { spec, dir } = fixture(["-e", "process.exit(0)"]);
+  await runOperation(spec, dir, helperDigest());
+  const expandedPolicy = [
+    ...spec.environmentPolicy,
+    { name: "USERNAME", mode: "context" },
+  ].sort((left, right) => left.name.localeCompare(right.name));
+  const expandedSpec = {
+    ...spec,
+    environmentPolicy: expandedPolicy,
+    invariantEnvironmentSha256: invariantEnvironmentDigest(expandedPolicy),
+  };
+  const retryDir = path.join(path.dirname(dir), "expanded-policy-evidence");
+  await runOperation(expandedSpec, retryDir, helperDigest());
+  expect(verifyRetryEvidence(spec, dir, retryDir, helperDigest())).toMatchObject({
+    verdict: "UNKNOWN",
+    reason: "ORDINARY_OR_RETRY_EVIDENCE_UNKNOWN",
+  });
 });
 
 it("keeps launch failure distinct from a numeric exit", async () => {

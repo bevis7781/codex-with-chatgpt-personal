@@ -13,7 +13,7 @@ const WORKSPACE_ID = /^[0-9a-f]{12}$/;
 const NONCE = /^[0-9a-f]{32}$/;
 const ENV_NAME = /^[A-Z_][A-Z0-9_]{0,63}$/;
 const MAX_EVIDENCE_BYTES = 200_000;
-const SCHEMA = "c2c.exact-terminal.v2";
+const SCHEMA = "c2c.exact-terminal.v3";
 
 function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -24,31 +24,42 @@ function exactKeys(value, keys) {
     Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");
 }
 
-function validateAllowlist(allowlist) {
-  if (!Array.isArray(allowlist) || allowlist.length < 1 || allowlist.length > 48 ||
-      allowlist.some((key) => typeof key !== "string" || !ENV_NAME.test(key)) ||
-      allowlist.join("\0") !== [...new Set(allowlist)].sort().join("\0")) {
-    throw new Error("INVALID_ENVIRONMENT_ALLOWLIST");
+function validateEnvironmentPolicy(policy) {
+  if (!Array.isArray(policy) || policy.length < 1 || policy.length > 48 ||
+      policy.some((entry) => !exactKeys(entry, ["name", "mode"]) ||
+        typeof entry.name !== "string" || !ENV_NAME.test(entry.name) ||
+        (entry.mode !== "invariant" && entry.mode !== "context"))) {
+    throw new Error("INVALID_ENVIRONMENT_POLICY");
+  }
+  const names = policy.map(({ name }) => name);
+  if (names.join("\0") !== [...new Set(names)].sort().join("\0")) {
+    throw new Error("INVALID_ENVIRONMENT_POLICY");
   }
 }
 
-function relevantEnvironment(allowlist, env = process.env) {
-  validateAllowlist(allowlist);
-  const entries = [];
+function relevantEnvironment(policy, env = process.env) {
+  validateEnvironmentPolicy(policy);
+  const invariantEntries = [];
+  const contextEntries = [];
   const childEnv = {};
-  for (const name of allowlist) {
+  for (const { name, mode } of policy) {
     const matches = Object.keys(env).filter((key) => key.toUpperCase() === name);
     if (new Set(matches.map((key) => env[key])).size > 1) throw new Error("AMBIGUOUS_ENVIRONMENT_KEY");
     const value = matches.length === 0 ? null : env[matches[0]];
     if (value !== null && typeof value !== "string") throw new Error("INVALID_ENVIRONMENT");
-    entries.push([name, value]);
     if (value !== null) childEnv[name] = value;
+    (mode === "invariant" ? invariantEntries : contextEntries).push([name, value]);
   }
-  return { entries, childEnv };
+  return {
+    childEnv,
+    invariantSha256: sha256(JSON.stringify(invariantEntries)),
+    contextSha256: sha256(JSON.stringify(contextEntries)),
+    contextPresent: contextEntries.filter(([, value]) => value !== null).map(([name]) => name),
+  };
 }
 
-export function environmentDigest(allowlist, env = process.env) {
-  return sha256(JSON.stringify(relevantEnvironment(allowlist, env).entries));
+export function invariantEnvironmentDigest(policy, env = process.env) {
+  return relevantEnvironment(policy, env).invariantSha256;
 }
 
 export function helperDigest() {
@@ -56,8 +67,8 @@ export function helperDigest() {
 }
 
 function parseSpec(value) {
-  if (!exactKeys(value, ["version", "workspaceId", "taskId", "claimId", "iteration", "nonce", "executable", "argv", "cwd", "environmentAllowlist", "environmentSha256", "maxOutputBytes", "timeoutMs"]) ||
-      value.version !== 2 || typeof value.workspaceId !== "string" || !WORKSPACE_ID.test(value.workspaceId) ||
+  if (!exactKeys(value, ["version", "workspaceId", "taskId", "claimId", "iteration", "nonce", "executable", "argv", "cwd", "environmentPolicy", "invariantEnvironmentSha256", "maxOutputBytes", "timeoutMs"]) ||
+      value.version !== 3 || typeof value.workspaceId !== "string" || !WORKSPACE_ID.test(value.workspaceId) ||
       typeof value.taskId !== "string" || !UUID_V4.test(value.taskId) ||
       typeof value.claimId !== "string" || !UUID_V4.test(value.claimId) ||
       !Number.isSafeInteger(value.iteration) || value.iteration < 1 ||
@@ -65,11 +76,11 @@ function parseSpec(value) {
       typeof value.executable !== "string" || !path.isAbsolute(value.executable) ||
       !Array.isArray(value.argv) || value.argv.some((arg) => typeof arg !== "string" || arg.includes("\0")) ||
       typeof value.cwd !== "string" || !path.isAbsolute(value.cwd) ||
-      typeof value.environmentSha256 !== "string" || !HEX.test(value.environmentSha256) ||
+      typeof value.invariantEnvironmentSha256 !== "string" || !HEX.test(value.invariantEnvironmentSha256) ||
       !Number.isInteger(value.maxOutputBytes) || value.maxOutputBytes < 1 || value.maxOutputBytes > 65_536 ||
       !Number.isInteger(value.timeoutMs) || value.timeoutMs < 1 || value.timeoutMs > 120_000 ||
       value.executable.includes("\0") || value.cwd.includes("\0")) throw new Error("INVALID_OPERATION_SPEC");
-  validateAllowlist(value.environmentAllowlist);
+  validateEnvironmentPolicy(value.environmentPolicy);
   return value;
 }
 
@@ -80,7 +91,57 @@ function readSpec(specPath) {
 }
 
 export function operationDigest(spec) {
-  return sha256(JSON.stringify(parseSpec(spec)));
+  const parsed = parseSpec(spec);
+  return sha256(JSON.stringify({
+    version: parsed.version,
+    workspaceId: parsed.workspaceId,
+    taskId: parsed.taskId,
+    claimId: parsed.claimId,
+    iteration: parsed.iteration,
+    nonce: parsed.nonce,
+    executable: parsed.executable,
+    argv: [...parsed.argv],
+    cwd: parsed.cwd,
+    environmentPolicy: parsed.environmentPolicy.map(({ name, mode }) => ({ name, mode })),
+    invariantEnvironmentSha256: parsed.invariantEnvironmentSha256,
+    maxOutputBytes: parsed.maxOutputBytes,
+    timeoutMs: parsed.timeoutMs,
+  }));
+}
+
+function immutableSpec(value) {
+  const parsed = parseSpec(value);
+  const snapshot = {
+    version: parsed.version,
+    workspaceId: parsed.workspaceId,
+    taskId: parsed.taskId,
+    claimId: parsed.claimId,
+    iteration: parsed.iteration,
+    nonce: parsed.nonce,
+    executable: parsed.executable,
+    argv: Object.freeze([...parsed.argv]),
+    cwd: parsed.cwd,
+    environmentPolicy: Object.freeze(parsed.environmentPolicy.map(({ name, mode }) => Object.freeze({ name, mode }))),
+    invariantEnvironmentSha256: parsed.invariantEnvironmentSha256,
+    maxOutputBytes: parsed.maxOutputBytes,
+    timeoutMs: parsed.timeoutMs,
+  };
+  return Object.freeze(snapshot);
+}
+
+function environmentPolicyDigest(policy) {
+  return sha256(JSON.stringify(policy.map(({ name, mode }) => ({ name, mode }))));
+}
+
+function validEnvironmentEvidence(value, spec) {
+  if (!exactKeys(value, ["invariantSha256", "contextSha256", "contextPresent"]) ||
+      value.invariantSha256 !== spec.invariantEnvironmentSha256 ||
+      typeof value.contextSha256 !== "string" || !HEX.test(value.contextSha256) ||
+      !Array.isArray(value.contextPresent)) return false;
+  const contextNames = spec.environmentPolicy.filter(({ mode }) => mode === "context").map(({ name }) => name);
+  return value.contextPresent.every((name, index) => typeof name === "string" &&
+    contextNames.includes(name) && (index === 0 || value.contextPresent[index - 1] < name)) &&
+    value.contextPresent.length <= contextNames.length;
 }
 
 function collector(maxBytes) {
@@ -98,25 +159,25 @@ function collector(maxBytes) {
 }
 
 export async function runOperation(spec, evidenceDir, expectedHelperSha256) {
-  parseSpec(spec);
+  const operation = immutableSpec(spec);
   if (typeof expectedHelperSha256 !== "string" || !HEX.test(expectedHelperSha256) || helperDigest() !== expectedHelperSha256) {
     throw new Error("HELPER_PIN_MISMATCH");
   }
-  const { childEnv } = relevantEnvironment(spec.environmentAllowlist);
-  if (environmentDigest(spec.environmentAllowlist) !== spec.environmentSha256) throw new Error("ENVIRONMENT_MISMATCH");
+  const environment = relevantEnvironment(operation.environmentPolicy);
+  if (environment.invariantSha256 !== operation.invariantEnvironmentSha256) throw new Error("INVARIANT_ENVIRONMENT_MISMATCH");
   if (!path.isAbsolute(evidenceDir)) throw new Error("INVALID_EVIDENCE_PATH");
-  if (!fs.statSync(spec.cwd).isDirectory()) throw new Error("INVALID_CWD");
+  if (!fs.statSync(operation.cwd).isDirectory()) throw new Error("INVALID_CWD");
   fs.mkdirSync(evidenceDir, { recursive: false, mode: 0o700 });
 
-  const stdout = collector(spec.maxOutputBytes);
-  const stderr = collector(spec.maxOutputBytes);
+  const stdout = collector(operation.maxOutputBytes);
+  const stderr = collector(operation.maxOutputBytes);
   const terminal = await new Promise((resolve) => {
     let child;
     let launchError = null;
     let timedOut = false;
     let timer;
     try {
-      child = spawn(spec.executable, spec.argv, { cwd: spec.cwd, env: childEnv, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+      child = spawn(operation.executable, operation.argv, { cwd: operation.cwd, env: environment.childEnv, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     } catch (error) {
       resolve({ kind: "launch_error", exitCode: null, signal: null, errorCode: String(error?.code ?? "SPAWN_THROW").slice(0, 80) });
       return;
@@ -124,7 +185,7 @@ export async function runOperation(spec, evidenceDir, expectedHelperSha256) {
     child.stdout.on("data", (chunk) => stdout.add(chunk));
     child.stderr.on("data", (chunk) => stderr.add(chunk));
     child.on("error", (error) => { launchError = String(error?.code ?? "SPAWN_ERROR").slice(0, 80); });
-    timer = setTimeout(() => { timedOut = true; child.kill(); }, spec.timeoutMs);
+    timer = setTimeout(() => { timedOut = true; child.kill(); }, operation.timeoutMs);
     child.on("close", (code, signal) => {
       clearTimeout(timer);
       if (launchError !== null) resolve({ kind: "launch_error", exitCode: null, signal: null, errorCode: launchError });
@@ -137,11 +198,15 @@ export async function runOperation(spec, evidenceDir, expectedHelperSha256) {
 
   const evidence = {
     schema: SCHEMA,
-    operationSha256: operationDigest(spec),
+    operationSha256: operationDigest(operation),
     helperSha256: expectedHelperSha256,
-    binding: { workspaceId: spec.workspaceId, taskId: spec.taskId, claimId: spec.claimId, iteration: spec.iteration, nonce: spec.nonce },
-    environmentAllowlist: spec.environmentAllowlist,
-    environmentSha256: spec.environmentSha256,
+    binding: { workspaceId: operation.workspaceId, taskId: operation.taskId, claimId: operation.claimId, iteration: operation.iteration, nonce: operation.nonce },
+    environmentPolicySha256: environmentPolicyDigest(operation.environmentPolicy),
+    environmentEvidence: {
+      invariantSha256: environment.invariantSha256,
+      contextSha256: environment.contextSha256,
+      contextPresent: environment.contextPresent,
+    },
     terminal,
     stdout: stdout.result(),
     stderr: stderr.result(),
@@ -170,7 +235,7 @@ function validTerminal(value) {
 
 export function verifyEvidence(spec, evidenceDir, expectedHelperSha256) {
   try {
-    parseSpec(spec);
+    const operation = immutableSpec(spec);
     if (typeof expectedHelperSha256 !== "string" || !HEX.test(expectedHelperSha256) || helperDigest() !== expectedHelperSha256) throw new Error("HELPER_PIN_MISMATCH");
     if (!path.isAbsolute(evidenceDir) || !fs.lstatSync(evidenceDir).isDirectory()) throw new Error("INVALID_EVIDENCE_PATH");
     const names = fs.readdirSync(evidenceDir);
@@ -181,37 +246,75 @@ export function verifyEvidence(spec, evidenceDir, expectedHelperSha256) {
     const raw = fs.readFileSync(evidencePath, "utf8");
     const evidence = JSON.parse(raw);
     if (raw !== JSON.stringify(evidence) + "\n" ||
-        !exactKeys(evidence, ["schema", "operationSha256", "helperSha256", "binding", "environmentAllowlist", "environmentSha256", "terminal", "stdout", "stderr"]) ||
-        evidence.schema !== SCHEMA || evidence.operationSha256 !== operationDigest(spec) ||
+        !exactKeys(evidence, ["schema", "operationSha256", "helperSha256", "binding", "environmentPolicySha256", "environmentEvidence", "terminal", "stdout", "stderr"]) ||
+        evidence.schema !== SCHEMA || evidence.operationSha256 !== operationDigest(operation) ||
         !exactKeys(evidence.binding, ["workspaceId", "taskId", "claimId", "iteration", "nonce"]) ||
-        evidence.binding.workspaceId !== spec.workspaceId || evidence.binding.taskId !== spec.taskId ||
-        evidence.binding.claimId !== spec.claimId || evidence.binding.iteration !== spec.iteration ||
-        evidence.binding.nonce !== spec.nonce ||
-        !Array.isArray(evidence.environmentAllowlist) ||
-        evidence.environmentAllowlist.join("\0") !== spec.environmentAllowlist.join("\0") ||
-        evidence.helperSha256 !== expectedHelperSha256 || evidence.environmentSha256 !== spec.environmentSha256 ||
-        !validTerminal(evidence.terminal) || !validOutput(evidence.stdout, spec.maxOutputBytes) ||
-        !validOutput(evidence.stderr, spec.maxOutputBytes)) throw new Error("MALFORMED_OR_MISMATCHED_EVIDENCE");
+        evidence.binding.workspaceId !== operation.workspaceId || evidence.binding.taskId !== operation.taskId ||
+        evidence.binding.claimId !== operation.claimId || evidence.binding.iteration !== operation.iteration ||
+        evidence.binding.nonce !== operation.nonce ||
+        evidence.helperSha256 !== expectedHelperSha256 ||
+        evidence.environmentPolicySha256 !== environmentPolicyDigest(operation.environmentPolicy) ||
+        !validEnvironmentEvidence(evidence.environmentEvidence, operation) ||
+        !validTerminal(evidence.terminal) || !validOutput(evidence.stdout, operation.maxOutputBytes) ||
+        !validOutput(evidence.stderr, operation.maxOutputBytes)) throw new Error("MALFORMED_OR_MISMATCHED_EVIDENCE");
     return { verdict: evidence.terminal.kind === "unknown" ? "UNKNOWN" : "VERIFIED", evidence };
   } catch (error) {
     return { verdict: "UNKNOWN", reason: String(error?.message ?? error).slice(0, 100) };
   }
 }
 
+export function verifyRetryEvidence(spec, ordinaryEvidenceDir, retryEvidenceDir, expectedHelperSha256) {
+  const ordinary = verifyEvidence(spec, ordinaryEvidenceDir, expectedHelperSha256);
+  const retry = verifyEvidence(spec, retryEvidenceDir, expectedHelperSha256);
+  if (ordinary.verdict !== "VERIFIED" || retry.verdict !== "VERIFIED") {
+    return { verdict: "UNKNOWN", reason: "ORDINARY_OR_RETRY_EVIDENCE_UNKNOWN" };
+  }
+  const first = ordinary.evidence;
+  const second = retry.evidence;
+  if (first.operationSha256 !== second.operationSha256 || first.helperSha256 !== second.helperSha256 ||
+      JSON.stringify(first.binding) !== JSON.stringify(second.binding) ||
+      first.environmentPolicySha256 !== second.environmentPolicySha256 ||
+      first.environmentEvidence.invariantSha256 !== second.environmentEvidence.invariantSha256) {
+    return { verdict: "UNKNOWN", reason: "RETRY_OPERATION_MISMATCH" };
+  }
+  return {
+    verdict: "VERIFIED",
+    operationSha256: first.operationSha256,
+    helperSha256: first.helperSha256,
+    binding: first.binding,
+    environmentPolicySha256: first.environmentPolicySha256,
+    invariantEnvironmentSha256: first.environmentEvidence.invariantSha256,
+    contextEnvironment: {
+      ordinary: { sha256: first.environmentEvidence.contextSha256, present: first.environmentEvidence.contextPresent },
+      retry: { sha256: second.environmentEvidence.contextSha256, present: second.environmentEvidence.contextPresent },
+    },
+  };
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === HERE) {
-  const [action, specPath, evidenceDir, pin] = process.argv.slice(2);
   try {
-    if (!action || !specPath || !evidenceDir || !pin || process.argv.length !== 6) throw new Error("USAGE");
-    const spec = readSpec(specPath);
-    if (action === "run") {
+    const args = process.argv.slice(2);
+    if (args[0] === "verify-retry") {
+      if (args.length !== 5 || args.some((arg) => !arg)) throw new Error("USAGE");
+      const [action, specPath, ordinaryDir, retryDir, pin] = args;
+      const spec = readSpec(specPath);
+      const result = verifyRetryEvidence(spec, ordinaryDir, retryDir, pin);
+      process.stdout.write(JSON.stringify(result) + "\n");
+      if (result.verdict !== "VERIFIED") process.exitCode = 2;
+    } else {
+      const [action, specPath, evidenceDir, pin] = args;
+      if (!action || !specPath || !evidenceDir || !pin || args.length !== 4) throw new Error("USAGE");
+      const spec = readSpec(specPath);
+      if (action === "run") {
       await runOperation(spec, evidenceDir, pin);
       // This line is informational. The terminal authority is terminal.json.
       process.stdout.write("EVIDENCE_WRITTEN\n");
-    } else if (action === "verify") {
-      const result = verifyEvidence(spec, evidenceDir, pin);
-      process.stdout.write(JSON.stringify(result) + "\n");
-      if (result.verdict !== "VERIFIED") process.exitCode = 2;
-    } else throw new Error("USAGE");
+      } else if (action === "verify") {
+        const result = verifyEvidence(spec, evidenceDir, pin);
+        process.stdout.write(JSON.stringify(result) + "\n");
+        if (result.verdict !== "VERIFIED") process.exitCode = 2;
+      } else throw new Error("USAGE");
+    }
   } catch (error) {
     process.stderr.write(String(error?.message ?? error).slice(0, 120) + "\n");
     process.exitCode = 2;

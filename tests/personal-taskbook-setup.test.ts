@@ -125,8 +125,13 @@ describe("Personal Taskbook Skill setup", () => {
       expect(installed).toContain("## Pinned local exact-terminal evidence exception");
       expect(installed).toContain(pin.sha256);
       expect(installed).toContain("fresh random 128-bit nonce");
-      expect(installed).toContain("Only allowlisted environment");
-      expect(installed).toContain("same helper hash");
+      expect(installed).toContain("Only listed environment values reach the child");
+      expect(installed).toContain("version-3 spec");
+      expect(installed).toContain("sorted environment policy");
+      expect(installed).toContain("`invariant` or `context`");
+      expect(installed).toMatch(/never store raw environment values or the full\s+environment/);
+      expect(installed).toMatch(/run `verify-retry` over both evidence\s+directories/);
+      expect(installed).toMatch(/requires the same target, argv, cwd, nonce, policy, invariant digest\s+and helper pin/);
       expect(installed).toContain("does not add an execution");
       expect(installed).toContain("## Host-context-dependent operations");
       expect(installed).toContain("Run the exact operation once in the ordinary sandbox");
@@ -138,6 +143,13 @@ describe("Personal Taskbook Skill setup", () => {
       expect(installed).toContain("no wrapper shell, compound command, script");
       expect(installed).toContain("stop without retrying");
       expect(installed).toContain("does not expose shell/exec to Web ChatGPT");
+      expect(installed).toContain("## Publication in a claimed Taskbook");
+      expect(installed).toContain("normally authorizes completing the full claimed Taskbook");
+      expect(installed).toContain("platform itself directly requests");
+      expect(installed).toMatch(/wait\s+without recording a terminal Taskbook result/);
+      expect(installed).toContain("one non-force push and a fresh remote readback");
+      expect(installed).toContain("any staging changes");
+      expect(installed).toContain("target branch points to local `HEAD`");
     }
   });
 

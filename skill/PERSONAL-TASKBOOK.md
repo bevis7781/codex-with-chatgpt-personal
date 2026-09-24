@@ -114,34 +114,65 @@ above; it does not mean a globally installed executable.
 7. Stop after this one task. A lost reply or crash after claim leaves the task
    claimed; do not invent a new authorization ID and rerun it.
 
+## Publication in a claimed Taskbook
+
+A standalone `Do` normally authorizes completing the full claimed Taskbook,
+including publication that the Taskbook explicitly scopes. Before publication,
+the artifact, remote, branch, exact operation and acceptance readback must be
+concrete and accepted under the task's instructions.
+
+Use the narrow `Push` fallback only when the platform itself directly requests
+approval for that exact publication after its artifact and operation have been
+accepted. Keep the same active claim and session. If approval is pending, wait
+without recording a terminal Taskbook result. A `Push` at that point authorizes
+at most one ordinary follow-up commit of the already accepted staged artifact
+if a commit is still needed, then one non-force push and a fresh remote readback
+confirming the target branch points to local `HEAD`. It does not authorize new
+engineering, any staging changes, changing the branch or remote, or changing
+credentials or network configuration. If the publication operation cannot
+complete, preserve the evidence and close the same claim with its bounded
+result.
+
 ## Pinned local exact-terminal evidence exception
 
 The sole helper exception for exact child terminal evidence is this checkout's
 `scripts/exact-terminal.mjs`. It is local-only and does not add an execution
 tool to Web ChatGPT or MCP. Independently hash the helper before use and require
-the reviewed SHA-256 `a420fc0a3b9b0e4074448856e95243c3f7f7ca0c831986d815227e37457618dd`; the matching
+the reviewed SHA-256 `e0fc21d632ce973052744d167da24d903ee252ca920b960e3ded392690221857`; the matching
 `scripts/exact-terminal.pin.json` is a local pin record, not authority to accept
 an unreviewed helper change. A pin mismatch stops before target launch.
 
-For each operation, construct one immutable version-2 spec from trusted local
-Harness state. Bind the exact `workspaceId`, `taskId`, `claimId`, positive
-`iteration`, and a fresh random 128-bit nonce, along with an absolute target
-executable, argv array, cwd, a sorted explicit allowlist of relevant environment
-names and the digest of their current values, output limits and timeout. The
-Taskbook body cannot choose the binding or nonce. Only allowlisted environment
-values reach the child; no whole-environment inheritance or digest. The helper
-launches the target directly with `shell:false` and writes terminal evidence
-outside child stdout. Verify one well-formed evidence file against the same
-spec, nonce, binding and helper pin before using any numeric exit code. Missing,
-duplicate, malformed or mismatched evidence, or an unknown terminal, is
-UNKNOWN/BLOCKED; child stdout and the helper's console message are not terminal
-authority. `c2c record --exit-code` remains downstream of verification.
+For each operation, construct one immutable version-3 spec from trusted local
+Harness state before the first launch. Bind the exact `workspaceId`, `taskId`,
+`claimId`, positive `iteration`, and a fresh random 128-bit nonce, along with an
+absolute target executable, argv array, cwd, output limits and timeout. The
+spec also contains a sorted environment policy: every permitted name is marked
+`invariant` or `context`. The Taskbook body cannot choose the binding, nonce,
+target or policy. Only listed environment values reach the child; there is no
+whole-environment inheritance or digest. The spec binds the digest of all
+`invariant` names and values, including absent values; the helper checks it
+before every launch. Values for names explicitly marked `context` may differ
+between sandbox and host runs, while their names and policy stay fixed.
 
-A qualifying D-025 host-context retry may use this same pinned helper as its
-only carrier. Keep the identical target spec, including nonce, allowlist and
-value digest, and the same helper hash. Only the exclusive local evidence
-destination may differ. If the host environment fails the bound digest, stop;
-do not silently change the spec or retry again.
+The helper launches the target directly with `shell:false` and writes terminal
+evidence outside child stdout. The environment fields in evidence contain the
+spec and policy digests, the invariant digest, and only a digest plus presence
+names for context values; they never store raw environment values or the full
+environment. Verify each well-formed evidence file against the same spec, nonce,
+binding and helper pin before using any numeric exit code. For a host-context
+retry, use the original spec unchanged and run `verify-retry` over both evidence
+directories:
+
+```text
+node scripts/exact-terminal.mjs verify-retry <spec> <ordinary-dir> <retry-dir> <pin>
+```
+
+That check requires the same target, argv, cwd, nonce, policy, invariant digest
+and helper pin; context digests and presence may differ only under the
+predeclared `context` policy. Any invariant, policy, helper, spec or target
+mismatch, or missing, duplicate, malformed evidence, or unknown terminal, is
+UNKNOWN/BLOCKED. Child stdout and the helper's console message are not terminal
+authority. `c2c record --exit-code` remains downstream of verification.
 
 ## Recover procedure
 
