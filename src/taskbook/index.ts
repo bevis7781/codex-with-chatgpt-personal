@@ -13,3 +13,5 @@ export * from "./lifecycle-records.js";
 export * from "./lifecycle-capability.js";
 export * from "./lifecycle.js";
 export * from "./recovery-evidence.js";
+export * from "./capsule.js";
+export * from "./archive.js";

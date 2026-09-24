@@ -29,6 +29,7 @@ export function createNewFileExclusive(io: TaskbookIo, file: string, data: strin
   }
   try {
     io.writeAll(fd, data);
+    io.sync(fd);
     io.close(fd);
   } catch (error) {
     io.closeQuietly(fd);

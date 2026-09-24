@@ -412,13 +412,25 @@ describe("Gate 2 lifecycle", () => {
     );
     const claim = parseClaimRecord(claimText);
     const executionTimestamp = new Date().toISOString();
+    const taskRoot = path.join(stateDir, "tasks", WORKSPACE_ID);
+    const resultPath = path.join(taskRoot, taskbookResultFileName(receipt.taskId));
+    const capsulePath = path.join(stateDir, "taskbook-terminal-evidence", WORKSPACE_ID, `${receipt.taskId}.json`);
+    let closeCount = 0;
+    const failCapsuleCloseIo: TaskbookIo = {
+      ...nodeTaskbookIo,
+      close: (fd) => {
+        closeCount += 1;
+        if (closeCount === 1) throw Object.assign(new Error("injected capsule close failure"), { code: "EIO" });
+        nodeTaskbookIo.close(fd);
+      },
+    };
     expectTaskbookError(
       () =>
         finishTaskbook({
           workspaceId: WORKSPACE_ID,
           projectRoot,
           stateDir,
-          io: closeFailIo,
+          io: failCapsuleCloseIo,
           taskId: receipt.taskId,
           claimId: claim.claimId,
           authorizationId: claim.authorizationId,
@@ -436,6 +448,46 @@ describe("Gate 2 lifecycle", () => {
       "STORAGE_ERROR",
       "EIO"
     );
+    expect(fs.existsSync(resultPath)).toBe(false);
+    expect(fs.existsSync(capsulePath)).toBe(false);
+    expect(inspectTaskbooks({ workspaceId: WORKSPACE_ID, projectRoot, stateDir }).all[0]?.status).toBe("claimed");
+
+    closeCount = 0;
+    const failResultCloseIo: TaskbookIo = {
+      ...nodeTaskbookIo,
+      close: (fd) => {
+        closeCount += 1;
+        if (closeCount === 2) throw Object.assign(new Error("injected result close failure"), { code: "EIO" });
+        nodeTaskbookIo.close(fd);
+      },
+    };
+    expectTaskbookError(
+      () =>
+        finishTaskbook({
+          workspaceId: WORKSPACE_ID,
+          projectRoot,
+          stateDir,
+          io: failResultCloseIo,
+          taskId: receipt.taskId,
+          claimId: claim.claimId,
+          authorizationId: claim.authorizationId,
+          bodySha256: receipt.bodySha256,
+          status: "blocked",
+          executionTimestamp,
+          outputId: null,
+          evidence: evidence(receipt.taskId, receipt.bodySha256, claim.claimId, claim.authorizationId, executionTimestamp, null, {
+            outputRecorded: false,
+            outputAvailable: false,
+            exitCode: null,
+            reason: "close failure fixture",
+          }),
+        }),
+      "STORAGE_ERROR",
+      "EIO"
+    );
+    expect(fs.existsSync(capsulePath)).toBe(true);
+    expect(fs.existsSync(resultPath)).toBe(true);
+    expect(parseResultRecord(fs.readFileSync(resultPath, "utf8")).status).toBe("blocked");
     expect(inspectTaskbooks({ workspaceId: WORKSPACE_ID, projectRoot, stateDir }).all[0]?.status).toBe("blocked");
   });
 

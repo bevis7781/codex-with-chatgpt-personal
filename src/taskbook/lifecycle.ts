@@ -40,6 +40,15 @@ import {
   boundCapabilitySupportsResultVersion,
   type BoundTaskbookLifecycleCapability,
 } from "./lifecycle-capability.js";
+import {
+  persistTaskbookTerminalEvidenceCapsule,
+  type CapsuleTerminalOrigin,
+  type TaskbookCapsuleEvidence,
+  type TaskbookTerminalEvidenceCapsule,
+} from "./capsule.js";
+import { inspectArchivedTaskbook, isArchivedAuthorizationUsed } from "./archive.js";
+import { executionRecordSchema, type ExecutionRecord } from "../execution/records.js";
+import type { ExecutionOutputSnapshot } from "../execution/output.js";
 
 export interface TaskbookLocalContext {
   /** Locally derived workspace identity; never supplied by remote Taskbook text. */
@@ -110,6 +119,10 @@ export interface TaskbookExecutionEvidence {
   exitCode: number | null;
   /** Required reason when a failed/blocked result has no output. */
   reason?: string;
+  /** Full read-back record when the local CLI captured it. */
+  executionRecord?: ExecutionRecord;
+  /** Bounded sanitized output snapshot when it remains readable. */
+  outputEvidence?: ExecutionOutputSnapshot;
 }
 
 export interface TaskbookEvidenceNote {
@@ -180,10 +193,10 @@ export interface TaskbookLinkedRecordInput extends TaskbookLocalContext {
 }
 
 export type TaskbookRecoveryEvidence =
-  | { classification: "complete"; status: TaskbookTerminalStatus; executionTimestamp: string; outputId: number | null }
-  | { classification: "none" }
-  | { classification: "incomplete" }
-  | { classification: "ambiguous" };
+  | { classification: "complete"; status: TaskbookTerminalStatus; executionTimestamp: string; outputId: number | null; capture?: TaskbookCapsuleEvidence }
+  | { classification: "none"; capture?: TaskbookCapsuleEvidence }
+  | { classification: "incomplete"; capture?: TaskbookCapsuleEvidence }
+  | { classification: "ambiguous"; capture?: TaskbookCapsuleEvidence };
 
 export interface TaskbookRecoverInput extends TaskbookLocalContext {
   recoveryAuthorizationId: string;
@@ -382,6 +395,38 @@ function validateEvidence(input: TaskbookFinishInput): void {
   } else if (!evidence.outputRecorded) {
     throw new TaskbookError("EVIDENCE_INVALID", undefined, "OUTPUT_NOT_RECORDED");
   }
+  if (evidence.executionRecord !== undefined) {
+    const checked = executionRecordSchema.safeParse(evidence.executionRecord);
+    const record = checked.success ? checked.data : null;
+    const note = record ? decodeTaskbookEvidenceNote(record.notes) : null;
+    if (
+      !record ||
+      record.taskId !== input.taskId ||
+      record.iteration !== 1 ||
+      record.timestamp !== input.executionTimestamp ||
+      (input.outputId === null ? record.outputId !== undefined : record.outputId !== input.outputId) ||
+      !note ||
+      note.bodySha256 !== input.bodySha256 ||
+      note.claimId !== input.claimId ||
+      note.authorizationId !== input.authorizationId
+    ) {
+      throw new TaskbookError("EVIDENCE_INVALID", undefined, "EXECUTION_RECORD_MISMATCH");
+    }
+  }
+  if (evidence.outputEvidence !== undefined) {
+    const output = evidence.outputEvidence;
+    if (
+      input.outputId === null ||
+      output.state !== "readable" ||
+      output.meta.id !== input.outputId ||
+      output.meta.taskId !== input.taskId ||
+      output.meta.iteration !== 1 ||
+      output.meta.sizeBytes !== Buffer.byteLength(output.text, "utf8") ||
+      output.textSha256.length !== 64
+    ) {
+      throw new TaskbookError("EVIDENCE_INVALID", undefined, "OUTPUT_SNAPSHOT_MISMATCH");
+    }
+  }
 }
 
 function checkCapacity(inventory: DetailedTaskbookInventory, additionalBytes: number, additionalEntries = 1): void {
@@ -397,15 +442,12 @@ function checkCapacity(inventory: DetailedTaskbookInventory, additionalBytes: nu
 export function inspectTaskbooks(options: TaskbookInspectOptions): TaskbookInspectResult {
   const io = contextIo(options);
   const paths = pathsFor(options, io);
-  return runLocked(io, paths, () => {
+  const result = runLocked(io, paths, () => {
     const inventory = inventoryTaskbookState(io, paths.workspaceTaskRoot);
     rejectCorruptState(inventory);
     const sorted = [...inventory.tasks].sort(compareTasks);
     if (options.taskId !== undefined) {
       validateUuid(options.taskId, "TASK_ID");
-      if (!sorted.some((task) => task.taskId === options.taskId)) {
-        throw new TaskbookError("TASK_NOT_FOUND", undefined, "TASK_ID");
-      }
     }
     const visible = options.taskId ? sorted.filter((task) => task.taskId === options.taskId) : sorted;
     return {
@@ -419,6 +461,12 @@ export function inspectTaskbooks(options: TaskbookInspectOptions): TaskbookInspe
       })),
     };
   });
+  if (options.taskId && result.all.length === 0) {
+    const archived = inspectArchivedTaskbook({ ...options, taskId: options.taskId });
+    if (!archived) throw new TaskbookError("TASK_NOT_FOUND", undefined, "TASK_ID");
+    return { ...result, pending: [], all: [archived] };
+  }
+  return result;
 }
 
 /** Atomically bind one pending envelope to one locally-created Do authorization. */
@@ -432,7 +480,7 @@ export function claimTaskbook(input: TaskbookClaimInput): TaskbookClaimedTask {
     if (inventory.unfinishedClaims.length > 0) {
       throw new TaskbookError("UNFINISHED_TASK", undefined, "CLAIM_EXISTS");
     }
-    if (inventory.authorizationIds.has(input.authorizationId)) {
+    if (inventory.authorizationIds.has(input.authorizationId) || isArchivedAuthorizationUsed(io, paths, input.authorizationId)) {
       throw new TaskbookError("AUTHORIZATION_REUSED", undefined, "AUTHORIZATION_ID");
     }
     if (inventory.pending > MAX_PENDING) {
@@ -515,7 +563,10 @@ export async function recoverTaskbook(
     rejectCorruptState(inventory);
     const task = inventory.unfinishedClaims[0];
     if (!task?.claim) return { outcome: "no-target" };
-    if (inventory.authorizationIds.has(input.recoveryAuthorizationId)) {
+    if (
+      inventory.authorizationIds.has(input.recoveryAuthorizationId) ||
+      isArchivedAuthorizationUsed(io, paths, input.recoveryAuthorizationId)
+    ) {
       throw new TaskbookError("AUTHORIZATION_REUSED", undefined, "RECOVERY_AUTHORIZATION_ID");
     }
 
@@ -588,8 +639,58 @@ export async function recoverTaskbook(
     ) {
       throw new TaskbookError("UPGRADE_REQUIRED", undefined, "UNSUPPORTED_LIFECYCLE_RESULT_VERSION");
     }
-    const file = path.join(paths.workspaceTaskRoot, taskbookResultFileName(task.taskId));
-    if (!createNewFileExclusive(io, file, serialized)) {
+    const capture: TaskbookCapsuleEvidence = evidence.capture ?? {
+      classification: evidence.classification,
+      recordSnapshot:
+        evidence.classification === "none"
+          ? "none"
+          : evidence.classification === "incomplete" || evidence.classification === "ambiguous"
+            ? "incomplete"
+            : "not-provided",
+      records: [],
+      outputs: [],
+      reason: result.reasonCode,
+    };
+    if (capture.classification !== evidence.classification) {
+      throw new TaskbookError("EVIDENCE_INVALID", undefined, "RECOVERY_CAPSULE_CLASSIFICATION");
+    }
+    let linkedExecutionStatus: string | null = null;
+    if (result.evidenceState === "complete-linked-execution") {
+      const recoveryClaim = task.claim;
+      if (!recoveryClaim) throw new TaskbookError("EVIDENCE_INVALID", undefined, "RECOVERY_CLAIM_MISSING");
+      const linked = capture.records.filter((record) => {
+        const note = decodeTaskbookEvidenceNote(record.notes);
+        return (
+          record.taskId === task.taskId && record.iteration === 1 &&
+          record.timestamp === result.executionTimestamp && (record.outputId ?? null) === result.outputId &&
+          note?.bodySha256 === task.bodySha256 && note.claimId === recoveryClaim.claimId &&
+          note.authorizationId === recoveryClaim.authorizationId
+        );
+      });
+      if (linked.length !== 1) throw new TaskbookError("EVIDENCE_INVALID", undefined, "RECOVERY_CAPSULE_RECORD_MISMATCH");
+      linkedExecutionStatus = linked[0].exitStatus;
+    }
+    const capsuleOrigin: CapsuleTerminalOrigin = result.terminalOrigin;
+    const capsule: TaskbookTerminalEvidenceCapsule = {
+      version: 1,
+      workspaceId: input.workspaceId,
+      taskId: task.taskId,
+      bodySha256: task.bodySha256,
+      claimId: task.claim.claimId,
+      status: result.status,
+      terminalOrigin: capsuleOrigin,
+      terminalReason: result.reasonCode,
+      result,
+      executionIteration: result.evidenceState === "complete-linked-execution" ? 1 : null,
+      executionTimestamp: result.executionTimestamp,
+      executionStatus: linkedExecutionStatus,
+      outputId: result.outputId,
+      evidence: capture,
+    };
+    const persistedCapsule = persistTaskbookTerminalEvidenceCapsule(io, paths, capsule);
+    result = persistedCapsule.result as TaskbookRecoveryResultRecord;
+    const resultFile = path.join(paths.workspaceTaskRoot, taskbookResultFileName(task.taskId));
+    if (!createNewFileExclusive(io, resultFile, serializeResultRecord(result))) {
       throw new TaskbookError("STORAGE_ERROR", undefined, "RESULT_EXISTS");
     }
     return { outcome: "recovered", result };
@@ -629,11 +730,36 @@ export function finishTaskbook(input: TaskbookFinishInput): TaskbookResultRecord
     };
     const serialized = serializeResultRecord(result);
     checkCapacity(inventory, Buffer.byteLength(serialized, "utf8"));
+    const capsule: TaskbookTerminalEvidenceCapsule = {
+      version: 1,
+      workspaceId: input.workspaceId,
+      taskId: input.taskId,
+      bodySha256: input.bodySha256,
+      claimId: input.claimId,
+      status: input.status,
+      terminalOrigin: "finish",
+      terminalReason: input.evidence.reason ?? null,
+      result,
+      executionIteration: input.evidence.iteration,
+      executionTimestamp: input.executionTimestamp,
+      executionStatus: input.evidence.executionRecord?.exitStatus ?? null,
+      outputId: input.outputId,
+      evidence: {
+        classification: "finish",
+        recordSnapshot: input.evidence.executionRecord ? "read-back" : "not-provided",
+        records: input.evidence.executionRecord ? [input.evidence.executionRecord] : [],
+        outputs: input.evidence.outputEvidence ? [input.evidence.outputEvidence] : [],
+        reason: input.evidence.reason ?? null,
+      },
+    };
+    const persistedCapsule = persistTaskbookTerminalEvidenceCapsule(io, paths, capsule);
+    const effectiveResult = persistedCapsule.result as TaskbookResultRecord;
+    const effectiveSerialized = serializeResultRecord(effectiveResult);
     const file = path.join(paths.workspaceTaskRoot, taskbookResultFileName(input.taskId));
-    if (!createNewFileExclusive(io, file, serialized)) {
+    if (!createNewFileExclusive(io, file, effectiveSerialized)) {
       throw new TaskbookError("STORAGE_ERROR", undefined, "RESULT_EXISTS");
     }
-    return result;
+    return effectiveResult;
   });
 }
 

@@ -76,9 +76,10 @@ import {
   type WaitingFor,
 } from "../session/state.js";
 import { appendExecutionRecord, readExecutionRecords } from "../execution/records.js";
-import { listExecutionOutputs, readExecutionOutput, saveExecutionOutput } from "../execution/output.js";
+import { inspectExecutionOutput, listExecutionOutputs, saveExecutionOutput } from "../execution/output.js";
 import {
   claimTaskbook,
+  archiveTaskbooks,
   decodeTaskbookEvidenceNote,
   encodeTaskbookEvidenceNote,
   finishTaskbook,
@@ -1704,6 +1705,15 @@ taskbookCmd
         say(JSON.stringify(payload));
         return;
       }
+      if (opts.task && result.all[0]) {
+        const item = result.all[0];
+        say(`任务：${item.taskId}（${item.title}）`);
+        say(`状态：${item.status}`);
+        say(`bodySha256：${item.bodySha256}`);
+        say(item.body);
+        if (item.result) say(JSON.stringify(item.result));
+        return;
+      }
       if (result.unfinished.length > 0) {
         say(`有未完成的已领取任务：${result.unfinished.map((item) => item.taskId).join(", ")}`);
       }
@@ -1715,6 +1725,42 @@ taskbookCmd
       say(`下一项：${next.taskId}（${next.title}）`);
       say(`bodySha256：${next.bodySha256}`);
       say(next.body);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+taskbookCmd
+  .command("archive")
+  .description("Preview or archive verified terminal Taskbooks for this workspace")
+  .option("-w, --workspace <path>")
+  .option("--keep-terminal <count>", "retain this many newest terminal Taskbooks", parseNonNegativeInteger, 100)
+  .option("--max-tasks <count>", "limit one archive batch to this many tasks", parseNonNegativeInteger, 50)
+  .option("--apply", "write verified archive bundles and remove matching active sidecars", false)
+  .option("--json", "machine-readable output", false)
+  .action((opts: { workspace?: string; keepTerminal: number; maxTasks: number; apply: boolean; json: boolean }) => {
+    try {
+      const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      const result = archiveTaskbooks({
+        workspaceId: workspace.id,
+        projectRoot: workspace.root,
+        keepTerminal: opts.keepTerminal,
+        maxTasks: opts.maxTasks,
+        apply: opts.apply,
+      });
+      if (opts.json) {
+        say(JSON.stringify(result));
+      } else {
+        say(`${opts.apply ? "归档执行" : "归档预览"}：终态 ${result.terminalCount} 项，计划归档 ${result.selected.length} 项。`);
+        for (const task of result.selected) {
+          say(`- ${task.taskId} ${task.status} ${task.bundleBytes} bytes${task.alreadyPrepared ? "（已准备）" : ""}`);
+        }
+        if (result.unfinished.length > 0) say(`有未完成 claim：${result.unfinished.map((item) => item.taskId).join(", ")}`);
+        if (result.reconcileTaskIds.length > 0) say(`待对账：${result.reconcileTaskIds.join(", ")}`);
+        if (!result.ok) cross(`归档未完成：${result.blockedReason ?? "ARCHIVE_FAILED"}`);
+        else check(opts.apply ? `已归档 ${result.archivedTaskIds.length} 项` : "预览完成；未写入归档文件");
+      }
+      if (!result.ok) process.exitCode = 1;
     } catch (error) {
       handleCliError(error, opts.json);
     }
@@ -1824,7 +1870,7 @@ function readTaskbookEvidence(
   }
 
   const listed = listExecutionOutputs(workspaceId, 50).find((item) => item.id === outputId);
-  const output = outputId === null ? null : readExecutionOutput(workspaceId, outputId);
+  const output = outputId === null ? null : inspectExecutionOutput(workspaceId, outputId);
   if (outputId === null && record.outputId !== undefined) {
     throw new Error("The execution record contains output; finish must name its outputId.");
   }
@@ -1833,7 +1879,7 @@ function readTaskbookEvidence(
   }
   if (
     outputId !== null &&
-    (output?.ok !== true || output.meta.taskId !== taskId || output.meta.iteration !== 1)
+    (output?.state !== "readable" || output.meta.taskId !== taskId || output.meta.iteration !== 1)
   ) {
     throw new Error("Execution output metadata does not match the Taskbook task and iteration.");
   }
@@ -1841,9 +1887,9 @@ function readTaskbookEvidence(
     throw new Error("A succeeded Taskbook requires an execution record with exitStatus ok.");
   }
   const outputRecorded = outputId !== null && listed !== undefined;
-  const outputAvailable = output?.ok === true;
+  const outputAvailable = output?.state === "readable";
   const exitCode = listed?.exitCode ?? null;
-  if (outputId !== null && (!outputRecorded || output?.ok === false)) {
+  if (outputId !== null && (!outputRecorded || output?.state !== "readable")) {
     throw new Error("Execution output was not read back for the requested outputId.");
   }
   const reason =
@@ -1867,6 +1913,8 @@ function readTaskbookEvidence(
     outputAvailable,
     exitCode,
     reason,
+    executionRecord: record,
+    outputEvidence: output?.state === "readable" ? output : undefined,
   };
 }
 

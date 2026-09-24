@@ -6,7 +6,12 @@ import {
 } from "./lifecycle.js";
 import type { TaskbookLifecycleTask } from "./inventory.js";
 import { readExecutionRecordSnapshot, type ExecutionRecord } from "../execution/records.js";
-import { listExecutionOutputs, readExecutionOutput, type ExecutionOutputMeta } from "../execution/output.js";
+import {
+  inspectExecutionOutput,
+  listExecutionOutputs,
+  type ExecutionOutputMeta,
+  type ExecutionOutputSnapshot,
+} from "../execution/output.js";
 
 const MAX_RECOVERY_OUTPUT_INDEX_ITEMS = 50;
 
@@ -36,15 +41,15 @@ function sameOutputMeta(a: ExecutionOutputMeta, b: ExecutionOutputMeta): boolean
   );
 }
 
-function readMatchingOutput(workspaceId: string, record: ExecutionRecord, taskId: string): ExecutionOutputMeta | null {
+function readMatchingOutput(workspaceId: string, record: ExecutionRecord, taskId: string): ExecutionOutputSnapshot | null {
   if (!Number.isSafeInteger(record.outputId) || record.outputId === undefined || record.outputId <= 0) return null;
   const listed = listExecutionOutputs(workspaceId, MAX_RECOVERY_OUTPUT_INDEX_ITEMS).filter(
     (item) => item.id === record.outputId
   );
   if (listed.length !== 1) return null;
-  const output = readExecutionOutput(workspaceId, record.outputId);
+  const output = inspectExecutionOutput(workspaceId, record.outputId);
   if (
-    output.ok !== true ||
+    output.state !== "readable" ||
     output.meta.taskId !== taskId ||
     output.meta.iteration !== 1 ||
     output.meta.allowed !== true ||
@@ -54,7 +59,28 @@ function readMatchingOutput(workspaceId: string, record: ExecutionRecord, taskId
   ) {
     return null;
   }
-  return output.meta;
+  return output;
+}
+
+function outputSnapshots(workspaceId: string, records: readonly ExecutionRecord[]): ExecutionOutputSnapshot[] {
+  const ids = [...new Set(records.flatMap((record) => record.outputId === undefined ? [] : [record.outputId]))].sort((a, b) => a - b);
+  return ids.map((id) => inspectExecutionOutput(workspaceId, id));
+}
+
+function capsuleCapture(
+  workspaceId: string,
+  records: readonly ExecutionRecord[],
+  classification: TaskbookRecoveryEvidence["classification"],
+  snapshotComplete: boolean,
+  reason: string | null = null
+): NonNullable<Extract<TaskbookRecoveryEvidence, { classification: "none" }>["capture"]> {
+  return {
+    classification,
+    recordSnapshot: !snapshotComplete ? "incomplete" : records.length === 0 ? "none" : "read-back",
+    records: [...records],
+    outputs: snapshotComplete ? outputSnapshots(workspaceId, records) : [],
+    reason,
+  };
 }
 
 /**
@@ -62,11 +88,13 @@ function readMatchingOutput(workspaceId: string, record: ExecutionRecord, taskId
  * executes commands, or copies record prose/paths into a lifecycle result.
  */
 export function inspectTaskbookRecoveryEvidence(workspaceId: string, task: TaskbookLifecycleTask): TaskbookRecoveryEvidence {
-  if (!task.claim) return { classification: "none" };
+  if (!task.claim) return { classification: "none", capture: capsuleCapture(workspaceId, [], "none", true) };
   const snapshot = readExecutionRecordSnapshot(workspaceId);
-  if (!snapshot.complete) return { classification: "ambiguous" };
+  if (!snapshot.complete) return { classification: "ambiguous", capture: capsuleCapture(workspaceId, [], "ambiguous", false) };
 
   const related = snapshot.records.filter((record) => record.taskId === task.taskId && record.iteration === 1);
+  const capture = (classification: TaskbookRecoveryEvidence["classification"], reason: string | null = null) =>
+    capsuleCapture(workspaceId, related, classification, true, reason);
   const exact: ExecutionRecord[] = [];
   let partialOrSuspicious = false;
   for (const record of related) {
@@ -96,41 +124,49 @@ export function inspectTaskbookRecoveryEvidence(workspaceId: string, task: Taskb
     }
   }
 
-  if (exact.length > 1 || (exact.length === 1 && partialOrSuspicious)) return { classification: "ambiguous" };
+  if (exact.length > 1 || (exact.length === 1 && partialOrSuspicious)) {
+    return { classification: "ambiguous", capture: capture("ambiguous") };
+  }
   if (exact.length === 0) {
-    return partialOrSuspicious ? { classification: "incomplete" } : { classification: "none" };
+    const classification = partialOrSuspicious ? "incomplete" : "none";
+    return { classification, capture: capture(classification) };
   }
 
   const record = exact[0];
-  if (!isCanonicalUtcTimestamp(record.timestamp)) return { classification: "incomplete" };
+  if (!isCanonicalUtcTimestamp(record.timestamp)) return { classification: "incomplete", capture: capture("incomplete") };
   const outputId = record.outputId ?? null;
   let outputMeta: ExecutionOutputMeta | null = null;
   if (outputId !== null) {
-    outputMeta = readMatchingOutput(workspaceId, record, task.taskId);
-    if (!outputMeta || record.outputAvailable !== true) return { classification: "incomplete" };
+    const output = readMatchingOutput(workspaceId, record, task.taskId);
+    outputMeta = output?.state === "readable" ? output.meta : null;
+    if (!outputMeta || record.outputAvailable !== true) return { classification: "incomplete", capture: capture("incomplete") };
   }
 
   if (record.exitStatus === "ok") {
-    if (outputId === null || !outputMeta || outputMeta.exitCode !== 0) return { classification: "incomplete" };
+    if (outputId === null || !outputMeta || outputMeta.exitCode !== 0) return { classification: "incomplete", capture: capture("incomplete") };
     return {
       classification: "complete",
       status: "succeeded",
       executionTimestamp: record.timestamp,
       outputId,
+      capture: capture("complete"),
     };
   }
 
   if (record.exitStatus !== "failed" && record.exitStatus !== "blocked") {
-    return { classification: "incomplete" };
+    return { classification: "incomplete", capture: capture("incomplete") };
   }
   if (record.exitStatus === "failed" && outputId !== null && (!outputMeta || outputMeta.exitCode === null || outputMeta.exitCode === 0)) {
-    return { classification: "incomplete" };
+    return { classification: "incomplete", capture: capture("incomplete") };
   }
-  if (outputId === null && !hasReasonWithoutLinkage(record.notes)) return { classification: "incomplete" };
+  if (outputId === null && !hasReasonWithoutLinkage(record.notes)) {
+    return { classification: "incomplete", capture: capture("incomplete") };
+  }
   return {
     classification: "complete",
     status: record.exitStatus,
     executionTimestamp: record.timestamp,
     outputId,
+    capture: capture("complete", outputId === null ? record.notes ?? null : null),
   };
 }

@@ -14,6 +14,10 @@ export interface TaskbookIo {
   mkdir(pathname: string): void;
   /** Remove an empty directory (used only to release the R1 lock). */
   rmdir(pathname: string): void;
+  /** Remove one file entry without following it. */
+  unlink(pathname: string): void;
+  /** Atomic same-volume rename used to finalize bounded evidence files. */
+  rename(from: string, to: string): void;
   /**
    * Bounded, iterative direct-child enumeration.
    * `exceeded` is true when more than `maxEntries` entries exist; the caller
@@ -25,6 +29,8 @@ export interface TaskbookIo {
   /** Exclusive create-new open (`wx`). Throws EEXIST when the leaf already exists. */
   openExclusive(pathname: string): number;
   writeAll(fd: number, data: string): void;
+  /** Flush one newly written regular file before an atomic rename. */
+  sync(fd: number): void;
   close(fd: number): void;
   closeQuietly(fd: number): void;
 }
@@ -37,6 +43,12 @@ export const nodeTaskbookIo: TaskbookIo = {
   },
   rmdir: (pathname) => {
     fs.rmdirSync(pathname);
+  },
+  unlink: (pathname) => {
+    fs.unlinkSync(pathname);
+  },
+  rename: (from, to) => {
+    fs.renameSync(from, to);
   },
   readDirBounded: (pathname, maxEntries) => {
     const names: string[] = [];
@@ -65,6 +77,9 @@ export const nodeTaskbookIo: TaskbookIo = {
   openExclusive: (pathname) => fs.openSync(pathname, "wx", 0o600),
   writeAll: (fd, data) => {
     fs.writeFileSync(fd, data, { encoding: "utf8" });
+  },
+  sync: (fd) => {
+    fs.fsyncSync(fd);
   },
   close: (fd) => {
     fs.closeSync(fd);
