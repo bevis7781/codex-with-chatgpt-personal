@@ -5,6 +5,18 @@
 
 This repository is a **Personal Fork** of [`XiaoDuoYa/codex-with-chatgpt`](https://github.com/XiaoDuoYa/codex-with-chatgpt). It keeps the upstream idea—ChatGPT reasons and reviews while the local Codex Harness executes—while following its own Personal product direction. The upstream project remains this fork's code lineage and an explicit review reference, not the authority for Personal product decisions. This fork adds a bounded V0.1 Taskbook workflow.
 
+## Choose between upstream and this Personal Fork
+
+Choose upstream for its simpler, read-only ChatGPT ↔ Codex planning and review path when you do not need the Personal operating contract. Choose this Personal Fork when you need persistent per-workspace OpenAI Secure MCP, one bounded recovery action for enabled workspaces after a reboot, or Web-to-local Taskbook submission with local execution authorization.
+
+| Decision | Upstream project | This Personal Fork |
+| --- | --- | --- |
+| Intended use | Read-only ChatGPT ↔ Codex planning and review | The Personal Secure MCP and Taskbook operating path |
+| Operating style | Use the upstream planning/review workflow | Web ChatGPT plans and reviews; the local Codex Harness executes |
+| Restart and multiple workspaces | Follow the upstream project's documented setup and recovery flow | Each enabled workspace has persistent Secure MCP state; one explicit `C2C-Connect-All.cmd` action reconnects enabled workspaces after reboot |
+| Web → local Taskbook | Not part of this simpler read-only path | Web submission queues bounded task text locally and never executes it |
+| Execution authorization | No local Taskbook execution step in this path | One standalone local `Do` authorizes at most one eligible task |
+
 > [!IMPORTANT]
 > **遇到问题？** 请先向 Codex 发送 **「更新 Codex with ChatGPT」** 并重试。更新到最新版本可以解决大多数已知问题。  
 > **Having trouble?** First ask Codex to **“Update Codex with ChatGPT”** and try again. Updating to the latest version resolves most known issues.

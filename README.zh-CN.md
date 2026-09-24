@@ -10,6 +10,18 @@
 的代码谱系和明确的审查参考，但不决定 Personal 产品方向。本 Fork 加入了受边界
 约束的 V0.1 Taskbook 工作流。
 
+## 选择上游还是这个 Personal Fork
+
+如果你只需要更简洁、只读的 ChatGPT ↔ Codex 规划与审查流程，不需要 Personal 的本地运行约定，可以选择上游。如果你需要按工作区持久运行 OpenAI Secure MCP、在重启后通过一次有界操作恢复多个工作区，或需要 Web → 本地 Taskbook 提交并由本地明确授权执行，可以选择这个 Personal Fork。
+
+| 对比项 | 上游项目 | 这个 Personal Fork |
+| --- | --- | --- |
+| 使用场景 | 只读的 ChatGPT ↔ Codex 规划与审查 | Personal Secure MCP 与 Taskbook 运行方式 |
+| 协作方式 | 使用上游的规划与审查流程 | Web ChatGPT 负责规划和审查；本地 Codex Harness 负责执行 |
+| 重启与多工作区 | 按上游项目文档使用其配置和恢复流程 | 每个启用的工作区保留独立 Secure MCP 状态；重启后显式运行一次 `C2C-Connect-All.cmd`，恢复所有启用工作区 |
+| Web → 本地 Taskbook | 这个简洁的只读流程不包含该 Fork 的 Taskbook 提交 | Web 提交有边界的任务文本到本地队列，但不会执行任务 |
+| 执行授权 | 该流程不包含本地 Taskbook 执行步骤 | 一次独立的本地 `Do` 最多授权执行一个符合条件的任务 |
+
 ## 解决什么问题
 
 ChatGPT 付费订阅的网页版额度大量闲置，Codex 却在消耗紧张的 API 额度做
