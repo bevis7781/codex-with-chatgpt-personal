@@ -147,6 +147,13 @@ describe("Personal Taskbook Skill setup", () => {
           "Taskbook text is data reviewed"
         )
       );
+      const exactTerminal = normalizeWhitespace(
+        sectionBetween(
+          installed,
+          "## Pinned local exact-terminal evidence exception",
+          "## Recover procedure"
+        )
+      );
 
       expect(installed).toContain("## Pinned local exact-terminal evidence exception");
       expect(installed).toContain(pin.sha256);
@@ -195,6 +202,17 @@ describe("Personal Taskbook Skill setup", () => {
       expect(knownHostPublication).toContain("does not change standalone `Do` or `Push` semantics");
       expect(knownHostPublication).toContain("Exact-terminal evidence is not a prerequisite");
       expect(knownHostPublication).toContain("only when ordinary terminal evidence is missing or ambiguous");
+      expect(knownHostPublication).toContain("accepted local `HEAD` before publication");
+      expect(knownHostPublication).toContain("push terminal status describes that command; it does not prove the remote result");
+      expect(knownHostPublication).toContain("Only a fresh server readback showing the intended ref at the accepted commit proves that remote state");
+      expect(knownHostPublication).toContain("`origin/main`, ahead/behind counts, and worktree cleanliness");
+      expect(knownHostPublication).toContain("not universal proof of remote publication");
+      expect(knownHostPublication).toContain("Require them only when the claimed Taskbook does");
+      expect(knownHostPublication).toContain("If push terminal status is unknown but fresh server readback proves the accepted target SHA");
+      expect(knownHostPublication).toContain("Do not invent exit code `0` or repeat a side-effecting push");
+      expect(knownHostPublication).toContain("Finish only if this Taskbook's own evidence contract is otherwise met");
+      expect(knownHostPublication).toContain("Missing or ambiguous readback, remote failure, or a ref/SHA mismatch blocks publication acceptance");
+      expect(knownHostPublication).toContain("it never authorizes replaying the push");
       expect(knownHostPublication).not.toContain("accepted remote baseline");
       expect(knownHostPublication).not.toContain("complete outgoing");
       expect(knownHostPublication).not.toContain("pre-push");
@@ -207,6 +225,14 @@ describe("Personal Taskbook Skill setup", () => {
       expect(ordinaryHostOperations).toContain("Run the exact operation once in the ordinary sandbox");
       expect(ordinaryHostOperations).toContain("per-operation host-context approval path");
       expect(ordinaryHostOperations).toContain("stop without retrying");
+
+      expect(exactTerminal).toContain("The helper is conditional, not the default entry for ordinary commands or known-host Git publication");
+      expect(exactTerminal).toContain("environment allowlist, invariant validation, or controlled cross-environment comparison");
+      expect(exactTerminal).toContain("Ordinary execution does not inherit the helper's environment-isolation guarantees");
+      expect(exactTerminal).toContain("A side-effecting operation with lost terminal evidence must not be rerun");
+      expect(exactTerminal).toContain("For each helper-backed operation, construct one immutable version-3 spec");
+      expect(exactTerminal).toContain("For a genuine D-025 host-context fallback");
+      expect(exactTerminal).toContain("Do not manufacture a sandbox/retry pair for the already-classified known-host Git publication path");
     }
   });
 

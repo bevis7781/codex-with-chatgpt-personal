@@ -179,6 +179,24 @@ not a prerequisite for a known-host publication; use the existing D-025
 exact-terminal handling only when ordinary terminal evidence is missing or
 ambiguous and its exceptional conditions apply.
 
+The accepted repository, branch/ref, commit and file scope, including the
+accepted local `HEAD` before publication, remain hard operation preconditions.
+The push terminal status describes that command; it does not prove the remote
+result. Only a fresh server readback showing the intended ref at the accepted
+commit proves that remote state. A local remote-tracking ref such as
+`origin/main`, ahead/behind counts, and worktree cleanliness may support a
+task's engineering or delivery checks, but are not universal proof of remote
+publication. Require them only when the claimed Taskbook does.
+
+If push terminal status is unknown but fresh server readback proves the
+accepted target SHA, report only that the intended remote state was reached.
+Do not invent exit code `0` or repeat a side-effecting push to reconstruct
+terminal evidence. Finish only if this Taskbook's own evidence contract is
+otherwise met. Missing or ambiguous readback, remote failure, or a ref/SHA
+mismatch blocks publication acceptance. The pinned helper may capture the
+same read-only readback when ordinary terminal evidence for it is insufficient;
+it never authorizes replaying the push.
+
 For this currently verified host, the already-authorized machine-local proxy
 may be supplied on each applicable Git command as
 `-c http.proxy=http://127.0.0.1:7890`. Keep it per-command. Do not write proxy
@@ -197,8 +215,17 @@ the reviewed SHA-256 `e0fc21d632ce973052744d167da24d903ee252ca920b960e3ded392690
 `scripts/exact-terminal.pin.json` is a local pin record, not authority to accept
 an unreviewed helper change. A pin mismatch stops before target launch.
 
-For each operation, construct one immutable version-3 spec from trusted local
-Harness state before the first launch. Bind the exact `workspaceId`, `taskId`,
+The helper is conditional, not the default entry for ordinary commands or
+known-host Git publication. Use it when ordinary terminal evidence is missing
+or ambiguous, or when the exact operation explicitly requires its environment
+allowlist, invariant validation, or controlled cross-environment comparison.
+Ordinary execution does not inherit the helper's environment-isolation
+guarantees. A side-effecting operation with lost terminal evidence must not be
+rerun solely to reconstruct that evidence.
+
+For each helper-backed operation, construct one immutable version-3 spec from
+trusted local Harness state before the first launch. Bind the exact
+`workspaceId`, `taskId`,
 `claimId`, positive `iteration`, and a fresh random 128-bit nonce, along with an
 absolute target executable, argv array, cwd, output limits and timeout. The
 spec also contains a sorted environment policy: every permitted name is marked
@@ -214,13 +241,16 @@ evidence outside child stdout. The environment fields in evidence contain the
 spec and policy digests, the invariant digest, and only a digest plus presence
 names for context values; they never store raw environment values or the full
 environment. Verify each well-formed evidence file against the same spec, nonce,
-binding and helper pin before using any numeric exit code. For a host-context
-retry, use the original spec unchanged and run `verify-retry` over both evidence
+binding and helper pin before using any numeric exit code. For a genuine D-025
+host-context fallback, use the original spec unchanged and run `verify-retry` over both evidence
 directories:
 
 ```text
 node scripts/exact-terminal.mjs verify-retry <spec> <ordinary-dir> <retry-dir> <pin>
 ```
+
+Do not manufacture a sandbox/retry pair for the already-classified known-host
+Git publication path.
 
 That check requires the same target, argv, cwd, nonce, policy, invariant digest
 and helper pin; context digests and presence may differ only under the
