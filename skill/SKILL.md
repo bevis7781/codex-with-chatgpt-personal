@@ -262,11 +262,16 @@ Speak only of 临时地址 / 固定域名 / 登录 Cloudflare.
 This is the authoritative first-time path for a supported, already bound
 Personal C2C workspace. When the user says standalone `配置`, keep the local
 preparation quiet and make OpenAI Secure MCP the default. Cloudflare Named/Quick
-is not an automatic fallback on this path.
+is not an automatic fallback on this path. The local Harness performs all
+workspace discovery and C2C commands itself; never ask the user to derive a
+`workspaceId`, open PowerShell, or manually run a C2C command.
 
-1. Detect prerequisites yourself: `node --version` (>= 20), and verify the
-   D-021 bound state root. Do not install `cloudflared` for this path.
-2. Prepare this workspace locally:
+1. Use the already-bound local workspace. Derive its exact `workspaceName` and
+   `workspaceId` yourself with `c2c workspace --json`; do not accept a path or
+   workspace identity selected by ChatGPT. Detect prerequisites yourself:
+   `node --version` (>= 20), and verify the D-021 bound state root. Do not
+   install `cloudflared` for this path.
+2. Prepare this workspace locally, running each command yourself:
    - run `c2c skill install --json` and `c2c sandbox-allow --json`;
    - verify the managed official `tunnel-client` v0.0.14 import. If it is
      absent, stop with the local instruction
@@ -274,11 +279,19 @@ is not an automatic fallback on this path.
    - verify that the one machine-level Restricted Runtime Key is configured
      through `c2c secure-mcp key set` (input is hidden). Never ask for or print
      the key in ChatGPT, a Taskbook, a project file, or a command argument;
-   - if this workspace is not registered, ask the user to create/select one
-     permanent OpenAI Tunnel for this ChatGPT workspace, then run
-     `c2c secure-mcp register --tunnel-id tunnel_<32 lowercase hex>`;
-   - run `c2c setup -w <workspace> --json` and, after registration,
-     `c2c connect-all --json`. The command starts/reuses a local-only Bridge,
+   - run `c2c setup -w <workspace> --json` and read its `workspaceName`,
+     `workspaceId`, `connectorName`, and current Secure MCP status;
+   - if the current workspace is not registered, surface the detected
+     `workspaceName` and `workspaceId` only to identify the target. Ask the
+     user only to create or select one permanent OpenAI Tunnel for this
+     workspace and paste its `tunnel_<32 lowercase hex>` ID. After they provide
+     that ID, register it yourself with
+     `c2c secure-mcp register --tunnel-id tunnel_<32 lowercase hex>`, then run
+     `c2c connect-all --json` using the same already-bound workspace.
+     Never ask the user to run `c2c workspace`, `c2c secure-mcp register`,
+     `c2c connect-all`, or equivalent commands;
+   - when already registered, run `c2c connect-all --json` yourself to verify
+     the current workspace. The command starts/reuses a local-only Bridge,
      discovers its dynamic loopback port, and attaches the registered stable
      Tunnel ID through the managed client. It never creates or deletes a
      remote Tunnel and never claims or executes a Taskbook.
@@ -287,11 +300,12 @@ is not an automatic fallback on this path.
    ambiguous runtime is a bounded stop; never retry indefinitely or silently
    enter Cloudflare.
 3. Once local Secure MCP readiness is PASS, give the user only the one-time
-   ChatGPT Platform/App/Tunnel/OAuth handoff actually needed. Use the existing
-   connector name and the registered Tunnel selector; do not automate App,
-   Tunnel, OAuth, pairing, or browser actions. If the selected onboarding flow
-   asks for a local OAuth pairing code, run `c2c pair -w <workspace> --json`
-   once only after the user reports that the connector is ready.
+   ChatGPT Platform/App/Tunnel/OAuth handoff actually needed. Use the exact
+   `connectorName` returned in setup JSON and the registered Tunnel selector;
+   do not automate App, Tunnel, OAuth, pairing, or browser actions. If the
+   selected onboarding flow asks for a local OAuth pairing code, run
+   `c2c pair -w <workspace> --json` once only after the user reports that the
+   connector/App is ready.
 
    ```text
    Name: <connectorName>
@@ -323,13 +337,18 @@ is not an automatic fallback on this path.
    a real failure, use `c2c status-all`, `c2c doctor`, or bounded
    `c2c disconnect-all` on demand.
 6. At completion, give this short Project Instructions routing rule for the
-   user to paste if they use a Project; do not create or edit the Project on
-   their behalf:
+   user to paste if they use a Project; replace all three placeholders with
+   the exact `connectorName`, `workspaceName`, and `workspaceId` from this
+   setup's JSON. Do not create or edit the Project on their behalf:
 
    ```text
-   This Project defaults to its declared C2C connector/workspace.
-   Do not proactively use other workspace connectors.
-   Cross-workspace use is allowed only when the user explicitly asks.
+   This Project uses the ChatGPT App named "<connectorName>" for its C2C workspace.
+   Expected workspaceName: "<workspaceName>".
+   Expected workspaceId: "<workspaceId>".
+   For ordinary requests about this Project's local workspace, repository, files, Git, or execution evidence, use only "<connectorName>".
+   When establishing workspace context, call workspace_info and require both workspaceName and workspaceId to match the values above.
+   If either value does not match, stop and report a routing failure. Do not infer or switch to another workspace.
+   Do not proactively use other workspace connectors. Cross-workspace use is allowed only when the user explicitly asks in the current message.
    ```
 
 ## Legacy first-time setup（compatibility only; not the Personal-first path）

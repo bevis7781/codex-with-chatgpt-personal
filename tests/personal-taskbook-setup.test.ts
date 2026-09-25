@@ -9,6 +9,7 @@ import {
   PERSONAL_TASKBOOK_MANAGED_MARKER,
   PERSONAL_TASKBOOK_SKILL_DIR,
 } from "../src/skill/personal-taskbook.js";
+import { connectorNameFor, DEFAULT_CONNECTOR_NAME, writeLastEndpoint } from "../src/config/endpoint.js";
 import { getStateDir, readStateRootBinding, stateRootBindingFile } from "../src/config/paths.js";
 import { cleanupExternalTempDirs, externalTempDir, projectWorkspaceFixture } from "./taskbook-helpers.js";
 
@@ -56,8 +57,16 @@ function normalizeWhitespace(text: string): string {
 describe("Personal Taskbook Skill setup", () => {
   it("defines the Personal-first setup handoff without the legacy browser flow", () => {
     const section = personalFirstSetupSection();
+    const normalized = normalizeWhitespace(section);
 
     expect(section).toContain("standalone `配置`");
+    expect(section).toContain("OpenAI Secure MCP the default");
+    expect(normalized).toContain("The local Harness performs all workspace discovery and C2C commands itself");
+    expect(normalized).toContain("derive a `workspaceId`");
+    expect(section).toContain("Never ask the user to run `c2c workspace`");
+    expect(section).toContain("surface the detected");
+    expect(normalized).toContain("Ask the user only to create or select one permanent OpenAI Tunnel");
+    expect(normalized).toContain("After they provide that ID, register it yourself");
     expect(section).toContain("D-021 bound state root");
     expect(section).toContain("c2c secure-mcp runtime import --source <approved local release directory>");
     expect(section).toContain("c2c secure-mcp key set");
@@ -77,9 +86,18 @@ describe("Personal Taskbook Skill setup", () => {
     expect(section.indexOf("c2c setup -w <workspace> --json")).toBeLessThan(
       section.indexOf("c2c pair -w <workspace> --json")
     );
-    expect(section).toContain("This Project defaults to its declared C2C connector/workspace.");
-    expect(section).toContain("Cross-workspace use is allowed only when the user explicitly asks.");
+    expect(section).toContain('This Project uses the ChatGPT App named "<connectorName>"');
+    expect(section).toContain('Expected workspaceName: "<workspaceName>".');
+    expect(section).toContain('Expected workspaceId: "<workspaceId>".');
+    expect(section).toContain("call workspace_info and require both workspaceName and workspaceId to match");
+    expect(section).toContain("If either value does not match, stop and report a routing failure");
+    expect(section).toContain("use only \"<connectorName>\"");
+    expect(section).toContain("Cross-workspace use is allowed only when the user explicitly asks in the current message.");
+    expect(normalized).toContain("replace all three placeholders with the exact `connectorName`, `workspaceName`, and `workspaceId` from this setup's JSON");
+    expect(section).toContain("The user performs the Platform/App/OAuth action themselves");
+    expect(section).toContain("Do not force a connectivity test");
 
+    expect(section).not.toContain("This Project defaults to its declared C2C connector/workspace.");
     expect(section).not.toContain("setupMode");
     expect(section).not.toContain("setupChoicePrompt");
     expect(section).not.toContain("Connection choice");
@@ -88,7 +106,7 @@ describe("Personal Taskbook Skill setup", () => {
     expect(section).not.toContain("automatically provisions Named Tunnel");
     expect(section).not.toContain("Server URL: <mcpUrl>");
     expect(section).not.toContain("chatgpt.com/plugins");
-    expect(section).not.toContain("workspace_info");
+    expect(section).toContain("workspace_info");
     expect(section).not.toContain("read_file");
     expect(section).not.toContain("c2c session set");
     expect(section).not.toContain("文件读取测试通过");
@@ -304,7 +322,7 @@ describe("Personal Taskbook Skill setup", () => {
     expect(fs.existsSync(path.join(codexHome, "skills", "codex-with-chatgpt", "SKILL.md"))).toBe(false);
   });
 
-  it("wires the same installer into a fresh local setup", async () => {
+  it("returns the exact connector identity for fresh and existing local Secure MCP workspaces", async () => {
     const codexHome = externalTempDir("c2c-personal-setup-home");
     const stateDir = externalTempDir("c2c-personal-setup-state");
     const workspace = projectWorkspaceFixture();
@@ -312,16 +330,49 @@ describe("Personal Taskbook Skill setup", () => {
     process.env.C2C_STATE_DIR = stateDir;
 
     try {
-      const result = runCli(codexHome, stateDir, repoRoot, [
+      const args = [
         "setup",
         "--workspace",
         workspace,
         "--no-tunnel",
         "--json",
-      ]);
+      ];
+      const result = runCli(codexHome, stateDir, repoRoot, args);
       expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-      expect(JSON.parse(result.stdout)).toMatchObject({ personalTaskbook: { ok: true } });
+      const payload = JSON.parse(result.stdout);
+      expect(payload).toMatchObject({
+        ok: true,
+        transport: "openai-secure-mcp",
+        workspaceId: expect.any(String),
+        workspaceName: expect.any(String),
+        connectorName: expect.any(String),
+        personalTaskbook: { ok: true },
+      });
+      expect(payload.connectorName).toBe(
+        connectorNameFor({
+          workspaceName: payload.workspaceName,
+          workspaceId: payload.workspaceId,
+          hadEndpointBefore: false,
+        })
+      );
+      expect(payload.connectorName).not.toBe(DEFAULT_CONNECTOR_NAME);
       expect(fs.existsSync(installedFile(codexHome, `${PERSONAL_TASKBOOK_SKILL_DIR}/SKILL.md`))).toBe(true);
+
+      writeLastEndpoint({ workspaceId: payload.workspaceId, port: 3708, publicUrl: null, mcpUrl: null });
+      const legacy = runCli(codexHome, stateDir, repoRoot, args);
+      expect(legacy.status, `${legacy.stdout}\n${legacy.stderr}`).toBe(0);
+      expect(JSON.parse(legacy.stdout).connectorName).toBe(DEFAULT_CONNECTOR_NAME);
+
+      writeLastEndpoint({
+        workspaceId: payload.workspaceId,
+        port: 3708,
+        publicUrl: null,
+        mcpUrl: null,
+        connectorName: "Existing ChatGPT App",
+      });
+      const existing = runCli(codexHome, stateDir, repoRoot, args);
+      expect(existing.status, `${existing.stdout}\n${existing.stderr}`).toBe(0);
+      expect(JSON.parse(existing.stdout).connectorName).toBe("Existing ChatGPT App");
     } finally {
       runCli(codexHome, stateDir, repoRoot, ["stop", "--workspace", workspace]);
     }

@@ -325,6 +325,15 @@ async function securePersonalSetup(
   assertStateOutsideProject(paths, workspace.root);
   const personalTaskbook = installPersonalTaskbookSkills();
   const sandbox = trySandboxAllow();
+  const resolveConnectorName = (): string => {
+    const previousEndpoint = readLastEndpoint(workspace.id);
+    return connectorNameFor({
+      workspaceName: workspace.name,
+      workspaceId: workspace.id,
+      previousName: previousEndpoint?.connectorName,
+      hadEndpointBefore: Boolean(previousEndpoint),
+    });
+  };
   if (!opts.connect) {
     const { runtime } = await ensureBridge(workspace.root, { localOnly: true });
     const pairing = await adminFetch<PairingResponse>(runtime, "POST", "/admin/pairing");
@@ -333,6 +342,7 @@ async function securePersonalSetup(
       transport: "openai-secure-mcp",
       workspaceId: workspace.id,
       workspaceName: workspace.name,
+      connectorName: resolveConnectorName(),
       mcpUrl: `http://127.0.0.1:${runtime.port}/mcp`,
       local: true,
       pairingCode: pairing.code,
@@ -353,11 +363,13 @@ async function securePersonalSetup(
   }
 
   const batch = await connectAll();
+  const connectorName = resolveConnectorName();
   const current = batch.results.find((result) => result.workspaceId === workspace.id);
   const payload = {
     ...secureMcpBatchPayload(batch),
     workspaceId: workspace.id,
     workspaceName: workspace.name,
+    connectorName,
     currentWorkspace: current ?? { status: "BLOCKED", reasonCode: "SECURE_MCP_WORKSPACE_NOT_REGISTERED" },
     personalTaskbook: { ok: personalTaskbook.ok, changed: personalTaskbook.changed },
     sandbox,
