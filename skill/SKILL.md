@@ -276,9 +276,27 @@ workspace discovery and C2C commands itself; never ask the user to derive a
    - verify the managed official `tunnel-client` v0.0.14 import. If it is
      absent, stop with the local instruction
      `c2c secure-mcp runtime import --source <approved local release directory>`;
-   - verify that the one machine-level Restricted Runtime Key is configured
-     through `c2c secure-mcp key set` (input is hidden). Never ask for or print
-     the key in ChatGPT, a Taskbook, a project file, or a command argument;
+   - inspect the existing machine-level Restricted Runtime Key read-only with
+     `c2c secure-mcp key status --json` using the already-bound state root. Read
+     only `key.configured` and `key.decryptable`; this command does not reveal
+     secret material. Follow exactly one of these cases:
+       - **Case A — `configured=false`:** this is a genuinely missing
+         machine-level prerequisite. Preserve the existing one-time,
+         hidden-input local key setup through `c2c secure-mcp key set` in a
+         normal trusted Windows user context. Stop and resume Personal-first
+         setup after that one-time local setup is complete. Never ask for or
+         print the key in ChatGPT, a Taskbook, a project file, a command
+         argument, or logs, and never invent a default or fallback key.
+       - **Case B — `configured=true, decryptable=true`:** the key is available
+         in this execution context. Continue the existing Personal-first flow,
+         including local registration and `c2c connect-all --json` as needed.
+       - **Case C — `configured=true, decryptable=false`:** treat this as a
+         bounded current-execution-context limitation. It does not mean the
+         existing shared key is missing, expired, invalid, corrupted, or wrong.
+         Do not run `c2c secure-mcp key set`, `replace`, or `rotate`; do not
+         overwrite or re-enter the key; and do not ask the user for it or expose
+         secret material. Continue only with steps that do not need plaintext
+         Runtime Key, as described below.
    - run `c2c setup -w <workspace> --json` and read its `workspaceName`,
      `workspaceId`, `connectorName`, and current Secure MCP status;
    - if the current workspace is not registered, surface the detected
@@ -286,20 +304,34 @@ workspace discovery and C2C commands itself; never ask the user to derive a
      user only to create or select one permanent OpenAI Tunnel for this
      workspace and paste its `tunnel_<32 lowercase hex>` ID. After they provide
      that ID, register it yourself with
-     `c2c secure-mcp register --tunnel-id tunnel_<32 lowercase hex>`, then run
-     `c2c connect-all --json` using the same already-bound workspace.
+     `c2c secure-mcp register --tunnel-id tunnel_<32 lowercase hex>` using the
+     same already-bound workspace;
      Never ask the user to run `c2c workspace`, `c2c secure-mcp register`,
      `c2c connect-all`, or equivalent commands;
-   - when already registered, run `c2c connect-all --json` yourself to verify
-     the current workspace. The command starts/reuses a local-only Bridge,
-     discovers its dynamic loopback port, and attaches the registered stable
-     Tunnel ID through the managed client. It never creates or deletes a
-     remote Tunnel and never claims or executes a Taskbook.
-   `skill install`, registration, and `connect-all` are explicit local
-   operations. A missing key, missing Tunnel ID, failed readiness check, or
-   ambiguous runtime is a bounded stop; never retry indefinitely or silently
+   - when the workspace is already registered, reuse that registration. A
+     rerun must safely resume partial setup and must not recreate the Tunnel,
+     clear state, reset the workspace, re-enter the key, or start a new
+     project;
+   - for Case B, run `c2c connect-all --json` yourself with the same bound
+     workspace. It starts or reuses the local-only Bridge, discovers its
+     dynamic loopback port, and attaches the registered stable Tunnel ID
+     through the managed client. It never creates or deletes a remote Tunnel
+     and never claims or executes a Taskbook;
+   - for Case C, after the Tunnel is registered or its existing registration
+     is confirmed, do not run key-dependent `c2c connect-all` in the context
+     already known unable to decrypt the key. The only normal host-context
+     fallback for this branch is the existing tracked `C2C-Connect-All.cmd`.
+     Ask the user to double-click it once from the normal Windows user context.
+     Explain only that it is the existing bounded local availability action
+     and does not execute Taskbooks. After the user reports that it completed
+     successfully for this workspace, continue to step 3;
+   `skill install`, registration, `connect-all`, and the launcher are explicit
+   local operations. A missing key, missing Tunnel ID, failed readiness check,
+   or ambiguous runtime is a bounded stop; never retry indefinitely or silently
    enter Cloudflare.
-3. Once local Secure MCP readiness is PASS, give the user only the one-time
+3. Once local Secure MCP readiness is PASS—through Case B's successful
+   `connect-all` or the user's successful launcher report for Case C—give the
+   user only the one-time
    ChatGPT Platform/App/Tunnel/OAuth handoff actually needed. Use the exact
    `connectorName` returned in setup JSON and the registered Tunnel selector;
    do not automate App, Tunnel, OAuth, pairing, or browser actions. If the

@@ -69,13 +69,40 @@ describe("Personal Taskbook Skill setup", () => {
     expect(normalized).toContain("After they provide that ID, register it yourself");
     expect(section).toContain("D-021 bound state root");
     expect(section).toContain("c2c secure-mcp runtime import --source <approved local release directory>");
+    expect(section).toContain("c2c secure-mcp key status --json");
+    expect(section).toContain("Case A — `configured=false`");
+    expect(section).toContain("Case B — `configured=true, decryptable=true`");
+    expect(section).toContain("Case C — `configured=true, decryptable=false`");
+    expect(section).toContain("bounded current-execution-context limitation");
     expect(section).toContain("c2c secure-mcp key set");
+    expect(section).toContain("one-time");
+    expect(section).toContain("hidden-input local key setup");
+    expect(section).toContain("normal trusted Windows user context");
+    expect(section).toContain("never invent a default or fallback key");
+    expect(section).toContain("expired, invalid, corrupted, or wrong");
+    expect(section).toContain("Do not run `c2c secure-mcp key set`, `replace`, or `rotate`");
+    expect(normalized).toContain("do not ask the user for it or expose secret material");
     expect(section).toContain("c2c secure-mcp register --tunnel-id tunnel_<32 lowercase hex>");
     expect(section).toContain("c2c skill install --json");
     expect(section).toContain("c2c sandbox-allow --json");
     expect(section).toContain("c2c setup -w <workspace> --json");
     expect(section).toContain("c2c connect-all --json");
     expect(section).toContain("C2C-Connect-All.cmd");
+    expect(normalized).toContain("only normal host-context fallback for this branch");
+    expect(section).toContain("does not execute Taskbooks");
+    expect(normalized).toContain("After the user reports that it completed successfully for this workspace");
+    expect(section).toContain("must not recreate the Tunnel");
+    expect(normalized).toContain("reset the workspace, re-enter the key, or start a new");
+    expect(section.indexOf("c2c secure-mcp register --tunnel-id")).toBeLessThan(
+      section.indexOf("C2C-Connect-All.cmd")
+    );
+    const caseC = sectionBetween(
+      section,
+      "**Case C — `configured=true, decryptable=false`:**",
+      "- run `c2c setup -w <workspace> --json`"
+    );
+    expect(caseC).toContain("Do not run `c2c secure-mcp key set`, `replace`, or `rotate`");
+    expect(caseC).not.toContain("c2c connect-all --json");
     expect(section).toContain("never retry indefinitely");
     expect(section).toContain("silently\n   enter Cloudflare");
     expect(section).toContain("Name: <connectorName>");
