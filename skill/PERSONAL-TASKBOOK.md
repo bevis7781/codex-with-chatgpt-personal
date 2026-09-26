@@ -58,6 +58,10 @@ above; it does not mean a globally installed executable.
   lowercase UUID v4 `authorizationId` before any claim attempt. It authorizes
   at most one task in the current workspace and is consumed even when the
   queue is empty or the attempt stops with an error.
+  The normal Harness claim path MUST NOT pass `--authorized-at`; when that
+  option is omitted, C2C core generates the canonical UTC authorization
+  timestamp. Do not synthesize or format a timestamp in the Harness. This does
+  not change the one-authorization, one-attempt rule.
 - A standalone user `Recover` is a separate local authorization event. It means
   the user explicitly attests that the original Harness/session/process for
   the one unfinished claim can no longer continue. Create and retain one fresh

@@ -58,6 +58,11 @@ describe("Personal Taskbook Skill setup", () => {
   it("defines the Personal-first setup handoff without the legacy browser flow", () => {
     const section = personalFirstSetupSection();
     const normalized = normalizeWhitespace(section);
+    const taskbookRule = fs.readFileSync(path.join(repoRoot, "skill", "PERSONAL-TASKBOOK.md"), "utf8");
+    const normalizedTaskbookRule = normalizeWhitespace(taskbookRule);
+    const freshnessStart = section.indexOf("1. At the start of this flow");
+    const freshnessEnd = section.indexOf("2. Use the already-bound local workspace", freshnessStart);
+    const freshnessGuard = normalizeWhitespace(section.slice(freshnessStart, freshnessEnd));
 
     expect(section).toContain("standalone `配置`");
     expect(section).toContain("OpenAI Secure MCP the default");
@@ -68,6 +73,29 @@ describe("Personal Taskbook Skill setup", () => {
     expect(normalized).toContain("Ask the user only to create or select one permanent OpenAI Tunnel");
     expect(normalized).toContain("After they provide that ID, register it yourself");
     expect(section).toContain("D-021 bound state root");
+    expect(freshnessStart).toBeGreaterThanOrEqual(0);
+    expect(freshnessEnd).toBeGreaterThan(freshnessStart);
+    expect(freshnessGuard).toContain("c2c skill install --json");
+    expect(freshnessGuard).toContain("inspect its `changed` value");
+    expect(freshnessGuard).toContain("If `changed=false`");
+    expect(freshnessGuard).toContain("continue normal setup immediately without restarting Codex");
+    expect(freshnessGuard).toContain("If `changed=true`");
+    expect(freshnessGuard).toContain("Stop the current `配置` flow");
+    expect(freshnessGuard).toContain(
+      "fully exit and restart Codex, reopen the same workspace, and send standalone `配置` again"
+    );
+    expect(freshnessGuard).toContain("Do not tell the user to delete or recreate the workspace, Tunnel, App, state root, or Runtime Key");
+    expect(freshnessGuard).toContain("do not clear partial C2C state");
+    const skillInstallIndex = section.indexOf("c2c skill install --json");
+    for (const laterSetupAction of [
+      "c2c secure-mcp key status --json",
+      "c2c secure-mcp register --tunnel-id",
+      "c2c connect-all --json",
+      "Name: <connectorName>",
+      "c2c pair -w <workspace> --json",
+    ]) {
+      expect(skillInstallIndex).toBeLessThan(section.indexOf(laterSetupAction));
+    }
     expect(section).toContain("c2c secure-mcp runtime import --source <approved local release directory>");
     expect(section).toContain("c2c secure-mcp key status --json");
     expect(section).toContain("Case A — `configured=false`");
@@ -83,7 +111,6 @@ describe("Personal Taskbook Skill setup", () => {
     expect(section).toContain("Do not run `c2c secure-mcp key set`, `replace`, or `rotate`");
     expect(normalized).toContain("do not ask the user for it or expose secret material");
     expect(section).toContain("c2c secure-mcp register --tunnel-id tunnel_<32 lowercase hex>");
-    expect(section).toContain("c2c skill install --json");
     expect(section).toContain("c2c sandbox-allow --json");
     expect(section).toContain("c2c setup -w <workspace> --json");
     expect(section).toContain("c2c connect-all --json");
@@ -109,6 +136,28 @@ describe("Personal Taskbook Skill setup", () => {
     expect(section).toContain("Description: Securely connect ChatGPT to the current Codex workspace for planning and review.");
     expect(section).toContain("Tunnel: <registered permanent tunnel ID selected in ChatGPT>");
     expect(section).toContain("Authentication: OAuth");
+    expect(section).toContain("WAIT_APP_READY");
+    expect(section).toContain("WAIT_PAIRING_ACCEPTED");
+    expect(normalized).toContain(
+      "The first `好了` after App creation means only App ready; it MUST NOT be interpreted as pairing or authorization complete."
+    );
+    expect(normalized).toContain("immediately run exactly one fresh `c2c pair -w <workspace> --json`");
+    expect(section).toContain("Do not generate the fresh code before the App-ready report");
+    expect(section.indexOf("WAIT_APP_READY")).toBeLessThan(
+      section.indexOf("c2c pair -w <workspace> --json")
+    );
+    expect(section.indexOf("c2c pair -w <workspace> --json")).toBeLessThan(
+      section.indexOf("WAIT_PAIRING_ACCEPTED")
+    );
+    expect(section.indexOf("WAIT_PAIRING_ACCEPTED")).toBeLessThan(
+      section.indexOf("Only after pairing/authorization acceptance")
+    );
+    expect(section.indexOf("Only after pairing/authorization acceptance")).toBeLessThan(
+      section.indexOf('This Project uses the ChatGPT App named "<connectorName>"')
+    );
+    expect(normalized).toContain(
+      "wait for a second `好了` or another clear report that pairing/authorization was accepted."
+    );
     expect(section).toContain("c2c pair -w <workspace> --json");
     expect(section.indexOf("c2c setup -w <workspace> --json")).toBeLessThan(
       section.indexOf("c2c pair -w <workspace> --json")
@@ -137,6 +186,14 @@ describe("Personal Taskbook Skill setup", () => {
     expect(section).not.toContain("read_file");
     expect(section).not.toContain("c2c session set");
     expect(section).not.toContain("文件读取测试通过");
+
+    expect(taskbookRule).toContain("normal Harness claim path MUST NOT pass `--authorized-at`");
+    expect(normalizedTaskbookRule).toContain("C2C core generates the canonical UTC authorization timestamp");
+    expect(normalizedTaskbookRule).toContain("one new lowercase UUID v4 `authorizationId`");
+    expect(normalizedTaskbookRule).toContain("queue is empty or the attempt stops with an error");
+    const claimCommand = taskbookRule.match(/c2c taskbook claim[\s\S]*?--harness <label>/)?.[0];
+    expect(claimCommand).toBeDefined();
+    expect(claimCommand).not.toContain("--authorized-at");
   });
 
   it("installs the explicit Rule without AGENTS.md or manual path wiring", () => {

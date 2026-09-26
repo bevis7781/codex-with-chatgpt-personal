@@ -266,13 +266,27 @@ is not an automatic fallback on this path. The local Harness performs all
 workspace discovery and C2C commands itself; never ask the user to derive a
 `workspaceId`, open PowerShell, or manually run a C2C command.
 
-1. Use the already-bound local workspace. Derive its exact `workspaceName` and
+1. At the start of this flow, run `c2c skill install --json` in the already
+   bound local checkout and inspect its `changed` value before making any
+   onboarding decisions.
+   - If `changed=false`, continue normal setup immediately without restarting
+     Codex or adding setup friction.
+   - If `changed=true`, the installed Skill changed on disk while this Codex
+     process may still have the old Skill loaded. Stop the current `配置` flow
+     before workspace/key interpretation, Tunnel registration, `connect-all`,
+     App/OAuth/pairing, or any other onboarding mutation. Tell the user to
+     fully exit and restart Codex, reopen the same workspace, and send
+     standalone `配置` again; explain briefly that the restart loads the Skill
+     just updated on disk. Do not tell the user to delete or recreate the
+     workspace, Tunnel, App, state root, or Runtime Key, and do not clear
+     partial C2C state.
+2. Use the already-bound local workspace. Derive its exact `workspaceName` and
    `workspaceId` yourself with `c2c workspace --json`; do not accept a path or
    workspace identity selected by ChatGPT. Detect prerequisites yourself:
    `node --version` (>= 20), and verify the D-021 bound state root. Do not
    install `cloudflared` for this path.
-2. Prepare this workspace locally, running each command yourself:
-   - run `c2c skill install --json` and `c2c sandbox-allow --json`;
+3. Prepare this workspace locally, running each command yourself:
+   - run `c2c sandbox-allow --json`;
    - verify the managed official `tunnel-client` v0.0.14 import. If it is
      absent, stop with the local instruction
      `c2c secure-mcp runtime import --source <approved local release directory>`;
@@ -324,20 +338,19 @@ workspace discovery and C2C commands itself; never ask the user to derive a
      Ask the user to double-click it once from the normal Windows user context.
      Explain only that it is the existing bounded local availability action
      and does not execute Taskbooks. After the user reports that it completed
-     successfully for this workspace, continue to step 3;
+     successfully for this workspace, continue to the OAuth handoff below;
    `skill install`, registration, `connect-all`, and the launcher are explicit
    local operations. A missing key, missing Tunnel ID, failed readiness check,
    or ambiguous runtime is a bounded stop; never retry indefinitely or silently
    enter Cloudflare.
-3. Once local Secure MCP readiness is PASS—through Case B's successful
+4. Once local Secure MCP readiness is PASS—through Case B's successful
    `connect-all` or the user's successful launcher report for Case C—give the
    user only the one-time
    ChatGPT Platform/App/Tunnel/OAuth handoff actually needed. Use the exact
    `connectorName` returned in setup JSON and the registered Tunnel selector;
-   do not automate App, Tunnel, OAuth, pairing, or browser actions. If the
-   selected onboarding flow asks for a local OAuth pairing code, run
-   `c2c pair -w <workspace> --json` once only after the user reports that the
-   connector/App is ready.
+   do not automate App, Tunnel, OAuth, pairing, or browser actions. After
+   giving the handoff, enter `WAIT_APP_READY`. Do not run pairing yet, and do
+   not emit final Project Instructions.
 
    ```text
    Name: <connectorName>
@@ -350,28 +363,36 @@ workspace discovery and C2C commands itself; never ask the user to derive a
    ChatGPT, create/delete a connector, create a Project or chat, send a boot
    prompt, or run a post-connect smoke test on this path. Do not use the old
    Named/Quick repair flow to recover Secure MCP.
-4. Wait for the user to report that the one-time connector/App authorization
-   is ready. Then, only if that flow needs it, provide the fresh pairing code:
+5. While in `WAIT_APP_READY`, wait for the user to report that the connector/App
+   has been created and is ready for authorization. The first `好了` after App
+   creation means only App ready; it MUST NOT be interpreted as pairing or
+   authorization complete. For this first-time OAuth pairing, immediately run
+   exactly one fresh `c2c pair -w <workspace> --json`, return that new pairing
+   code, and enter `WAIT_PAIRING_ACCEPTED`:
 
    ```text
    配对码：<pairingCode>
    请在刚创建的连接器授权页输入配对码；完成后告诉我“好了”。
    ```
 
-   Do not reuse the code from `c2c setup`, expose tokens, or perform the
-   authorization in the browser yourself.
-5. When the user reports Connected / authorized / pairing accepted, consider
-   setup complete from the user's report. Do not force a connectivity test,
-   read a workspace file, send a boot prompt, create a Project/chat, or open
-   ChatGPT to verify it. Normal reboot recovery is the tracked
+   Do not generate the fresh code before the App-ready report. Do not reuse an
+   older pairing code from setup or local preparation, expose tokens, or perform
+   authorization in the browser yourself. The same natural `好了` can be used
+   at both stages; the current state determines its meaning.
+6. While in `WAIT_PAIRING_ACCEPTED`, wait for a second `好了` or another clear
+   report that pairing/authorization was accepted. Only this later event marks
+   onboarding authorization complete. Do not force a connectivity test, read a
+   workspace file, send a boot prompt, create a Project/chat, or open ChatGPT
+   to verify it. Normal reboot recovery is the tracked
    `C2C-Connect-All.cmd` wrapper, not per-workspace `配置`; it never forwards
    arbitrary arguments and never executes Taskbooks. If the user later reports
    a real failure, use `c2c status-all`, `c2c doctor`, or bounded
    `c2c disconnect-all` on demand.
-6. At completion, give this short Project Instructions routing rule for the
-   user to paste if they use a Project; replace all three placeholders with
-   the exact `connectorName`, `workspaceName`, and `workspaceId` from this
-   setup's JSON. Do not create or edit the Project on their behalf:
+7. Only after pairing/authorization acceptance, give this short Project
+   Instructions routing rule for the user to paste if they use a Project;
+   replace all three placeholders with the exact `connectorName`,
+   `workspaceName`, and `workspaceId` from this setup's JSON. Do not create or
+   edit the Project on their behalf:
 
    ```text
    This Project uses the ChatGPT App named "<connectorName>" for its C2C workspace.
